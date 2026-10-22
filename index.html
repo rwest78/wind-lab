@@ -1,0 +1,275 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#173b2b">
+<title>WIND LAB V9.2.2</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font:13px system-ui,Arial;background:#163322;color:#fff}
+#app{position:relative;height:100dvh;min-height:450px;overflow:hidden}
+#map,#terrain{position:absolute;inset:0}
+#terrain{display:none;z-index:2;touch-action:none}
+#windCanvas{position:absolute;inset:0;width:100%;height:100%;z-index:3;pointer-events:none}
+#map{z-index:1}
+.ui{position:absolute;inset:0;z-index:5;pointer-events:none}
+button,select,input,.panel,.compass{pointer-events:auto}
+button,select{background:#315a46;border:1px solid #b9d9c4;color:white;border-radius:7px;padding:7px;font:inherit}
+button:active{background:#507d61}
+.status{position:absolute;top:7px;left:7px;max-width:55%;background:#102b20e8;border-radius:7px;padding:7px;line-height:1.4}
+.actions{position:absolute;right:6px;top:6px;display:flex;flex-direction:column;gap:4px}
+.actions button{font-size:10px;max-width:110px;min-height:29px;padding:4px 6px}
+.actions.collapsed button:not(#menu){display:none}
+#menu{background:#173b2bee;font-weight:700}
+.panel{position:absolute;bottom:8px;left:8px;right:8px;max-height:48%;overflow:auto;background:#102b20f3;border:1px solid #b9d9c4;border-radius:12px;padding:10px}
+.tabs{display:flex;gap:3px}
+.tabs button{flex:1;padding:7px 2px}
+.tabs .active{background:#cde7d4;color:#163322}
+.section{display:none}
+.section.active{display:block}
+.line{display:flex;align-items:center;gap:9px;margin:11px 0}
+.line label{flex:1;min-width:0}
+input[type=range],select{width:100%}
+.summary{background:#25513c;border-radius:7px;padding:8px;line-height:1.5}
+.bottom{position:absolute;bottom:8px;right:8px}
+.open{position:absolute;bottom:8px;left:8px;display:none}
+.compass{position:absolute;left:8px;top:72px;width:40px;padding:2px;background:#102b20ee;border:1px solid #bad8c3;border-radius:12px;text-align:center;touch-action:none;box-shadow:0 2px 12px #0008}
+.handle{font-size:6px;padding:3px 0;min-height:20px;border-bottom:1px solid #ffffff44;touch-action:none}
+.dial{width:19px;height:19px;margin:auto;touch-action:none;display:block}
+.readout{font-weight:bold;font-size:7px}
+.small{font-size:5px;opacity:.8}
+#gpsPin{position:absolute;z-index:4;pointer-events:none;display:none;transform:translate(-50%,-100%);font-size:30px;filter:drop-shadow(0 0 3px white)}
+.bottom{font-size:10px;padding:5px 7px}
+.hidden{display:none!important}
+.pinPanel{position:absolute;bottom:56px;left:8px;right:8px;max-height:42%;overflow:auto;background:#102b20f5;border:1px solid #b9d9c4;border-radius:10px;padding:10px;pointer-events:auto}
+.pinPanel input,.pinPanel select{width:100%;padding:8px;background:#244c39;color:white;border:1px solid #98b6a1;border-radius:6px}
+.pinPanel .line{margin:7px 0}
+.pinPanel button{padding:7px}
+.pinLabel{background:#11291bdc;color:#fff;border-radius:4px;padding:2px 4px;white-space:nowrap;font-size:10px}
+.leaflet-div-icon{background:none;border:none}
+.leaflet-control-attribution{font-size:9px!important}
+</style>
+</head>
+<body>
+<div id="app">
+<div id="map"></div>
+<div id="terrain"></div>
+<canvas id="windCanvas"></canvas>
+<div id="gpsPin">🔵</div>
+<div class="ui">
+<div id="status" class="status">Starting WIND LAB…</div>
+<div class="actions collapsed" id="actions">
+<button id="menu">☰ Tools</button>
+<button id="gps">🔵 GPS / My Location</button>
+<button id="follow">▶ Follow Me</button>
+<button id="goStand">📍 Go to Stand</button>
+<button id="place">Place Stand</button>
+<button id="record">📌 Record Wind</button>
+<button id="addPin">＋ Add Pin</button>
+<button id="pins">📍 Manage Pins</button>
+<button id="coneMode">🌬 All Cones</button>
+<button id="home">Go to Property</button>
+<button id="north">North Up</button>
+</div>
+<div class="compass" id="compass">
+<div class="handle" id="handle">☰ DRAG COMPASS</div>
+<svg class="dial" id="dial" viewBox="0 0 120 120">
+<circle cx="60" cy="60" r="55" fill="#183b2b" stroke="#c9e8d0" stroke-width="2"/>
+<circle cx="60" cy="60" r="43" fill="none" stroke="#ffffff55"/>
+<g fill="white" font-size="13" text-anchor="middle">
+<text x="60" y="17">N</text>
+<text x="104" y="64">E</text>
+<text x="60" y="111">S</text>
+<text x="16" y="64">W</text>
+</g>
+<g id="needle">
+<polygon points="60,21 54,60 66,60" fill="#ff5555"/>
+<polygon points="60,99 54,60 66,60" fill="#d9e5e0"/>
+</g>
+<circle cx="60" cy="60" r="7" fill="#ffe132" stroke="white" stroke-width="2"/>
+</svg>
+<div class="readout" id="readout">315° NW</div>
+<div class="small">WIND FROM · TURN DIAL</div>
+</div>
+<button class="open" id="open">☰ Controls</button>
+<div class="panel" id="panel">
+<div class="tabs">
+<button data-tab="weather" class="active">Weather</button>
+<button data-tab="wind">Wind</button>
+<button data-tab="sim">Simulator</button>
+<button data-tab="terrain">3D</button>
+<button id="close">✕</button>
+</div>
+<div class="section active" id="weather">
+<div class="summary" id="forecast">Loading forecast…</div>
+<div class="line"><button id="refresh">↻ Forecast</button><button id="current">Use Current</button></div>
+<div class="line"><label>Forecast hour<select id="hours"></select></label><button id="apply">Apply</button></div>
+<div class="line"><label>Wind source<select id="source"><option value="manual">Manual</option><option value="forecast">Forecast</option></select></label></div>
+<div class="line"><label>Observed wind FROM <span id="obsDirText">315°</span><input id="obsDir" type="range" min="0" max="355" step="5" value="315"></label></div>
+<div class="line"><label>Observed speed <span id="obsSpeedText">3 mph</span><input id="obsSpeed" type="range" min="0" max="30" value="3"></label></div>
+<div class="line"><button id="saveObs">Save Observation</button><button id="clearObs">Clear</button></div>
+<div id="obsList">Choose Record Wind, then tap terrain.</div>
+</div>
+<div class="section" id="wind">
+<div class="line"><button id="minus">−5°</button><label>Wind FROM <b id="directionText">315° NW</b><input id="direction" type="range" min="0" max="355" step="5" value="315"></label><button id="plus">+5°</button></div>
+<div class="line"><label>Speed <b id="speedText">8 mph</b><input id="speed" type="range" min="0" max="30" value="8"></label></div>
+<div class="line"><label>Gusts <b id="gustText">12 mph</b><input id="gust" type="range" min="0" max="50" value="12"></label></div>
+<div class="line"><label>Scent cone width<select id="spread"><option value="9">Narrow</option><option value="17" selected>Medium</option><option value="29">Wide</option></select></label></div>
+<div class="line"><label>Wind particle density <b id="densityText">250</b><input id="density" type="range" min="50" max="600" step="25" value="250"></label></div>
+<div class="line"><label>Animation speed <b id="motionText">3×</b><input id="motion" type="range" min=".5" max="8" step=".5" value="3"></label></div>
+</div>
+<div class="section" id="sim">
+<div class="line"><label>Airflow model<select id="simulation"><option value="on">Terrain influenced (experimental)</option><option value="off">Straight-line</option></select></label></div>
+<div class="line"><label>Leeward eddies<select id="eddies"><option value="on">Experimental on</option><option value="off">Off</option></select></label></div>
+<div class="line"><label>Eddy strength <b id="eddyStrengthText">65%</b><input id="eddyStrength" type="range" min="0" max="100" value="65"></label></div>
+<div class="line"><label>Wind height<select id="windHeight"><option value="1.5">5 ft</option><option value="6" selected>20 ft</option><option value="12">40 ft</option><option value="24">80 ft</option></select></label></div>
+<div class="line"><label>Terrain influence <b id="influenceText">65%</b><input id="influence" type="range" min="0" max="100" value="65"></label></div>
+<div class="line"><label>Turbulence <b id="turbulenceText">35%</b><input id="turbulence" type="range" min="0" max="100" value="35"></label></div>
+<div class="line"><label>Particle colors<select id="color"><option value="diagnostic">Green / Yellow / Red</option><option value="white">White</option><option value="cyan">Cyan</option></select></label></div>
+<div id="eddyInfo">Experimental model; not measured wind.</div>
+<button id="animate">Animation: On</button>
+</div>
+<div class="section" id="terrainControls">
+<div class="line"><button id="enable">Enable 3D</button><button id="back">2D Satellite</button></div>
+<div class="line"><label>Tilt <b id="tiltText">45°</b><input id="tilt" type="range" min="0" max="65" value="45"></label></div>
+<div class="line"><label>Terrain exaggeration <b id="heightText">3×</b><input id="height" type="range" min="1" max="6" step=".5" value="3"></label></div>
+<div class="line"><label>Hillshade <b id="shadeText">45%</b><input id="shade" type="range" min="0" max="100" value="45"></label></div>
+<div class="line"><button id="left">↶ Rotate</button><button id="right">Rotate ↷</button><button id="north2">North Up</button></div>
+<div class="line"><button id="relief">Relief</button><button id="satellite">Satellite</button></div>
+<div class="line"><button id="zoomIn">＋ Zoom</button><button id="zoomOut">－ Zoom</button></div>
+<div id="terrainInfo">2D satellite active.</div>
+</div>
+</div>
+<div id="pinPanel" class="pinPanel hidden">
+<b id="pinHeading">Pin</b>
+<div class="line"><label style="flex:1">Label (optional)<input id="pinName" placeholder="Automatic name"></label></div>
+<div class="line">
+<label style="flex:1">Type<select id="pinType"><option value="stand">Stand + scent cone</option><option value="scout">Scouting marker</option><option value="bedding">Bedding</option><option value="sign">Deer sign</option><option value="access">Access</option><option value="funnel">Funnel</option></select></label>
+<label>Color<input id="pinColor" type="color" value="#ffdc20" style="width:54px;height:37px"></label>
+</div>
+<div class="line"><button id="pinSave">Save Pin</button><button id="pinFocus">Focus</button><button id="pinDelete">Delete</button><button id="pinCancel">Close</button></div>
+<div class="line"><button id="pinExport">Export Backup</button><button id="pinImport">Import Backup</button><input type="file" id="pinFile" accept="application/json,.json" class="hidden"></div>
+<div id="pinList"></div>
+</div>
+<button class="bottom" id="clean">👁 Clean View</button>
+<button class="bottom hidden" id="restore">👁 Show Controls</button>
+</div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module">
+
+const $=id=>document.getElementById(id), HOME=[32.60675,-86.61625],NORTH=[32.610286,-86.615062],SOUTH=[32.603200,-86.617447];
+const SAT='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/',DEM='https://s3.amazonaws.com/elevation-tiles-prod/terrarium/';
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x)),norm=x=>(x%360+360)%360,card=x=>['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'][Math.round(norm(x)/22.5)%16],v=id=>+$ (id).value;
+let bearing=315,stand=[...HOME],location=[...HOME],gps=null,mode='2d',placement='',obsTarget=null,observations=[],weather=null,selected=null,following=false,watch=null,animation=true;
+let map,fan,standMarker,gpsMarker,obsMarkers=[],three=null,loadId=0;
+const PINKEY='windlab_v922_pins';let pinsData=[],pinLayers=[],activePin=null,editingPin=null,pendingPin=null,conesMode='all';
+try{let old=JSON.parse(localStorage.getItem(PINKEY)||'null');pinsData=Array.isArray(old)?old:[]}catch(_){}
+if(!pinsData.length)pinsData=[{id:'original',lat:stand[0],lon:stand[1],name:'Stand 1',type:'stand',color:'#ffdc20'}];
+activePin=pinsData.find(x=>x.type==='stand')?.id||null;
+function savePins(){try{localStorage.setItem(PINKEY,JSON.stringify(pinsData))}catch(e){status('Pin storage unavailable; export a backup')}}
+function selectedStand(){return pinsData.find(x=>x.id===activePin&&x.type==='stand')||pinsData.find(x=>x.type==='stand')}
+function standLocations(){return pinsData.filter(x=>x.type==='stand'&&(conesMode==='all'||x.id===activePin))}
+function fanFor(p){let len=v('speed')?150+v('speed')*48:0,half=Math.min(55,v('spread')+Math.max(0,v('gust')-v('speed'))*.45),d=norm(bearing+180),q=[[p.lat,p.lon]];for(let i=-32;i<=32;i++)q.push(dest([p.lat,p.lon],d+i/32*half,len));return q}
+function updatePins(){if(!map)return;pinLayers.forEach(x=>x.remove());pinLayers=[];if(fan){fan.remove();fan=null}for(const p of standLocations())pinLayers.push(L.polygon(fanFor(p),{color:p.color,weight:2,fillOpacity:v('speed')?.24:0,opacity:v('speed')?1:0,interactive:false}).addTo(map));for(const p of pinsData){let icon=L.divIcon({className:'',html:`<div style="width:16px;height:16px;border:2px solid white;border-radius:50%;background:${p.color};box-shadow:0 0 5px #000"></div>${p.name?`<span class="pinLabel">${escapeHTML(p.name)}</span>`:''}`,iconSize:[20,20],iconAnchor:[8,8]});let m=L.marker([p.lat,p.lon],{icon,draggable:false}).addTo(map);m.on('click',()=>editPin(p.id));pinLayers.push(m)}if(three)update3DMarkers()}
+function escapeHTML(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function editPin(id){editingPin=id;pendingPin=null;let p=pinsData.find(x=>x.id===id);if(!p)return;$('pinHeading').textContent='Edit pin';$('pinName').value=p.name||'';$('pinType').value=p.type;$('pinColor').value=p.color;$('pinDelete').disabled=false;showPinPanel()}
+function showPinPanel(){$('pinPanel').classList.remove('hidden');renderPinList()}
+function renderPinList(){$('pinList').replaceChildren();pinsData.forEach(p=>{let b=document.createElement('button');b.textContent=(p.type==='stand'?'🌬 ':'📍 ')+(p.name||'Pin');b.style.margin='3px';b.onclick=()=>editPin(p.id);$('pinList').appendChild(b)})}
+function newPin(p){pendingPin=p;editingPin=null;$('pinHeading').textContent='New pin';$('pinName').value='';$('pinType').value='stand';$('pinColor').value='#ffdc20';$('pinDelete').disabled=true;showPinPanel()}
+function selectActive(id){activePin=id;let p=selectedStand();if(p)stand=[p.lat,p.lon];sync();updatePins()}
+
+function status(s){$('status').textContent=s;clearTimeout(status.timer);status.timer=setTimeout(()=>$('status').style.opacity='.3',7000);$('status').style.opacity='1'}
+function dest(p,d,m){let a=d*Math.PI/180;return [p[0]+Math.cos(a)*m/111320,p[1]+Math.sin(a)*m/(111320*Math.cos(p[0]*Math.PI/180))]}
+function fanPoints(){let len=v('speed')?150+v('speed')*48:0,half=Math.min(55,v('spread')+Math.max(0,v('gust')-v('speed'))*.45),d=norm(bearing+180),p=[stand];for(let i=-32;i<=32;i++)p.push(dest(stand,d+i/32*half,len));return p}
+function pin(color,size=23){return L.divIcon({className:'',html:`<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:3px solid white;box-shadow:0 0 8px black"></div>`,iconSize:[size,size],iconAnchor:[size/2,size/2]})}
+function initMap(){if(!window.L){status('Leaflet failed to load. Check connection.');return}
+ map=L.map('map',{zoomControl:false}).setView(HOME,15);
+ L.tileLayer(SAT+'{z}/{y}/{x}',{maxZoom:19,attribution:'© Esri'}).addTo(map);
+ // Saved stands own their scent cones.
+
+ [NORTH,SOUTH].forEach((p,i)=>L.circleMarker(p,{radius:7,color:'white',weight:2,fillColor:i?'#fb923c':'#ef4444',fillOpacity:1}).addTo(map));
+ standMarker=null;
+ updatePins();
+ map.on('click',e=>{if(!placement)return;let p=[e.latlng.lat,e.latlng.lng],a=placement;placement='';if(a==='stand')setStand(p);else if(a==='pin')newPin(p);else chooseObs(p)});
+ sync();status('WIND LAB · 2D satellite ready')
+}
+function sync(){ $('direction').value=bearing;$('readout').textContent=$('directionText').textContent=bearing+'° '+card(bearing);$('needle').setAttribute('transform',`rotate(${bearing} 60 60)`);for(let n of ['speed','gust','density','motion'])$(n+'Text').textContent=v(n)+(n==='speed'||n==='gust'?' mph':n==='motion'?'×':'');
+ updatePins()}
+function setBearing(n,manual=true){bearing=norm(Math.round(n/5)*5);if(manual)$('source').value='manual';sync()}
+function setStand(p){newPin(p);$('pinType').value='stand';status('Choose Save Pin to add this stand')}
+function gps2D(){if(!gps||!map)return;if(gpsMarker)gpsMarker.remove();gpsMarker=L.marker(gps,{icon:pin('#159dff',25),zIndexOffset:1000}).addTo(map).bindPopup('Your GPS location')}
+function gps3D(){let pin=$('gpsPin');if(!three||!gps){pin.style.display='none';return}let p=geoToWorld(gps);if(!p.inside){pin.style.display='none';return}let g=three,vec=new g.T.Vector3(p.x,ground(p.x,p.z)+3,p.z).project(g.camera);if(vec.z< -1||vec.z>1){pin.style.display='none';return}pin.style.display='block';pin.style.left=(vec.x+1)*50+'%';pin.style.top=(1-vec.y)*50+'%'}
+function drawObs(){obsMarkers.forEach(m=>m.remove());obsMarkers=observations.map(o=>L.marker([o.lat,o.lon],{icon:L.divIcon({className:'',html:'📌',iconSize:[26,26]})}).addTo(map).bindPopup(`${o.dir}° · ${o.speed} mph`));$('obsList').textContent=observations.length?observations.map((o,i)=>`${i+1}. ${o.dir}° ${card(o.dir)} · ${o.speed} mph`).join(' | '):'No observations.'}
+function chooseObs(p){obsTarget=p;showTab('weather');status('Wind observation location selected')}
+function tile(lat,lon,z){let n=2**z,r=lat*Math.PI/180;return{x:(lon+180)/360*n,y:(1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*n}}
+function config(p){let z=13,t=tile(...p,z);return{z,x:Math.floor(t.x)-1,y:Math.floor(t.y)-1,nx:3,ny:3,satZ:14}}
+async function bitmap(url){let r=await fetch(url);if(!r.ok)throw Error('Tile HTTP '+r.status);return createImageBitmap(await r.blob())}
+async function elevation(c){let w=c.nx*256,h=c.ny*256,cv=document.createElement('canvas');cv.width=w;cv.height=h;let cx=cv.getContext('2d',{willReadFrequently:true});await Promise.all(Array.from({length:c.nx*c.ny},async(_,i)=>{let x=i%c.nx,y=Math.floor(i/c.nx),b=await bitmap(`${DEM}${c.z}/${c.x+x}/${c.y+y}.png`);cx.drawImage(b,x*256,y*256);b.close()}));let px=cx.getImageData(0,0,w,h).data,arr=new Float32Array(w*h),low=Infinity,high=-Infinity;for(let i=0;i<arr.length;i++){let k=i*4,n=px[k]*256+px[k+1]+px[k+2]/256-32768;arr[i]=n;low=Math.min(low,n);high=Math.max(high,n)}return{arr,w,h,low,high}}
+async function imagery(c){let scale=2**(c.satZ-c.z),cols=c.nx*scale,rows=c.ny*scale,cv=document.createElement('canvas');cv.width=cols*256;cv.height=rows*256;let cx=cv.getContext('2d'),q=Array.from({length:cols*rows},(_,i)=>[i%cols,Math.floor(i/cols)]),done=0;await Promise.all(Array.from({length:8},async()=>{while(q.length){let [x,y]=q.shift();try{let b=await bitmap(`${SAT}${c.satZ}/${c.y*scale+y}/${c.x*scale+x}`);cx.drawImage(b,x*256,y*256);b.close();done++}catch(_){}}}));return done?cv:null}
+function sample(x,y){let g=three;x=clamp(x,0,g.w-1);y=clamp(y,0,g.h-1);let x0=Math.floor(x),y0=Math.floor(y),x1=Math.min(g.w-1,x0+1),y1=Math.min(g.h-1,y0+1),a=x-x0,b=y-y0;return g.arr[y0*g.w+x0]*(1-a)*(1-b)+g.arr[y0*g.w+x1]*a*(1-b)+g.arr[y1*g.w+x0]*(1-a)*b+g.arr[y1*g.w+x1]*a*b}
+function ground(x,z){let g=three;return (sample((x/g.W+.5)*(g.w-1),(z/g.D+.5)*(g.h-1))-(g.low+g.high)/2)*v('height')}
+function geoToWorld(p){let g=three,t=tile(...p,g.c.z),fx=(t.x-g.c.x)/g.c.nx,fy=(t.y-g.c.y)/g.c.ny;return{x:(fx-.5)*g.W,z:(fy-.5)*g.D,inside:fx>=0&&fx<=1&&fy>=0&&fy<=1}}
+function worldToGeo(x,z){let g=three,tx=g.c.x+(x/g.W+.5)*g.c.nx,ty=g.c.y+(z/g.D+.5)*g.c.ny,n=2**g.c.z;return[Math.atan(Math.sinh(Math.PI*(1-2*ty/n)))*180/Math.PI,tx/n*360-180]}
+function cameraUpdate(){if(!three)return;let g=three;g.phi=clamp(g.phi,.025,1.55);g.dist=clamp(g.dist,Math.max(180,Math.max(g.W,g.D)*.035),150000);g.camera.position.set(g.cx+g.dist*Math.sin(g.phi)*Math.sin(g.theta),g.cy+g.dist*Math.cos(g.phi),g.cz+g.dist*Math.sin(g.phi)*Math.cos(g.theta));g.camera.lookAt(g.cx,g.cy,g.cz);gps3D()}
+function update3DMarkers(){if(!three)return;let g=three;while(g.markers.children.length){let o=g.markers.children[0];g.markers.remove(o);o.geometry?.dispose();o.material?.dispose()}for(let [p,color] of [[NORTH,0xef4444],[SOUTH,0xfb923c],...pinsData.map(p=>[[p.lat,p.lon],parseInt(p.color.slice(1),16)]),...observations.map(o=>[[o.lat,o.lon],0x45e3ff])]){let q=geoToWorld(p);if(!q.inside)continue;let r=clamp(g.dist/450,2.5,11),m=new g.T.Mesh(new g.T.SphereGeometry(r,10,8),new g.T.MeshBasicMaterial({color,depthTest:true}));m.position.set(q.x,ground(q.x,q.z)+r,q.z);g.markers.add(m)}if(g.fan){g.scene.remove(g.fan);g.fan.traverse(o=>{o.geometry?.dispose();o.material?.dispose()})}g.fan=new g.T.Group();for(let p of standLocations()){let q=fanFor(p).map(x=>geoToWorld(x));if(q.some(x=>!x.inside))continue;let vertices=[],idx=[];for(let x of q)vertices.push(x.x,ground(x.x,x.z)+3,x.z);for(let i=1;i<q.length-1;i++)idx.push(0,i,i+1);let geom=new g.T.BufferGeometry();geom.setAttribute('position',new g.T.Float32BufferAttribute(vertices,3));geom.setIndex(idx);g.fan.add(new g.T.Mesh(geom,new g.T.MeshBasicMaterial({color:parseInt(p.color.slice(1),16),transparent:true,opacity:.32,depthTest:true,side:g.T.DoubleSide})))}g.scene.add(g.fan);gps3D()}
+async function start3D(force=false){if(three&&!force)return;let id=++loadId;if(three)stop3D(false);if(mode==='2d'&&!force){let c=map.getCenter();location=[c.lat,c.lng]}status('Loading 3D elevation…');try{let T=await import('https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js'),c=config(location),d=await elevation(c);if(id!==loadId)return;let meters=2*Math.PI*6378137/2**c.z,cos=Math.cos(location[0]*Math.PI/180),W=c.nx*meters*cos,D=c.ny*meters*cos,host=$('terrain');host.style.display='block';let scene=new T.Scene();scene.background=new T.Color('#24372f');let camera=new T.PerspectiveCamera(48,host.clientWidth/host.clientHeight,1,1000000),renderer=new T.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio||1,2));renderer.setSize(host.clientWidth,host.clientHeight);host.appendChild(renderer.domElement);scene.add(new T.AmbientLight(0xffffff,1.5));let light=new T.DirectionalLight(0xffffff,2);light.position.set(-700,1300,500);scene.add(light);let geom=new T.PlaneGeometry(W,D,192,192);geom.rotateX(-Math.PI/2);let mat=new T.MeshStandardMaterial({color:0xaac8a0,side:T.DoubleSide}),mesh=new T.Mesh(geom,mat);scene.add(mesh);let markers=new T.Group();scene.add(markers);
+three={T,c,...d,W,D,host,scene,camera,renderer,geom,mesh,markers,mat,theta:0,phi:Math.PI/2-v('tilt')*Math.PI/180,dist:Math.max(W,D)*.85,cx:0,cy:0,cz:0,fan:null,view:'satellite'};
+let pos=geom.attributes.position;for(let y=0;y<=192;y++)for(let x=0;x<=192;x++)pos.setY(y*193+x,(sample(x/192*(d.w-1),y/192*(d.h-1))-(d.low+d.high)/2)*v('height'));pos.needsUpdate=true;geom.computeVertexNormals();let q=geoToWorld(location);three.cx=q.x;three.cz=q.z;three.cy=ground(q.x,q.z);cameraUpdate();mode='3d';update3DMarkers();$('terrainInfo').textContent=`Elevation ${Math.round(d.low*3.28084)}–${Math.round(d.high*3.28084)} ft · ${v('height')}×`;status('3D ready · loading satellite…');
+let pointers=new Map(),prev=null,pinch=null,moved=false,down=null;let canvas=renderer.domElement;canvas.style.touchAction='none';
+canvas.onpointerdown=e=>{e.preventDefault();canvas.setPointerCapture(e.pointerId);pointers.set(e.pointerId,[e.clientX,e.clientY]);if(pointers.size===1){prev=[e.clientX,e.clientY];down=[...prev];moved=false}else{pinch=null;moved=true}};
+canvas.onpointermove=e=>{if(!pointers.has(e.pointerId))return;pointers.set(e.pointerId,[e.clientX,e.clientY]);let a=[...pointers.values()];if(a.length===1&&prev){let n=a[0];if(down&&Math.hypot(n[0]-down[0],n[1]-down[1])>7)moved=true;three.theta-=(n[0]-prev[0])*.006;three.phi+=(n[1]-prev[1])*.006;prev=[...n];cameraUpdate()}else if(a.length===2){let dist=Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]);if(pinch)three.dist*=clamp(pinch/dist,.75,1.33);pinch=dist;cameraUpdate()}};
+canvas.onpointerup=e=>{if(!moved&&placement){let rect=canvas.getBoundingClientRect(),ndc=new T.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),ray=new T.Raycaster();ray.setFromCamera(ndc,camera);let hits=ray.intersectObject(mesh);if(hits.length){let p=worldToGeo(hits[0].point.x,hits[0].point.z),action=placement;placement='';action==='stand'?setStand(p):action==='pin'?newPin(p):chooseObs(p)}}pointers.delete(e.pointerId);prev=null;pinch=null};
+canvas.onwheel=e=>{e.preventDefault();three.dist*=e.deltaY>0?1.1:.9;cameraUpdate()};
+three.ro=new ResizeObserver(()=>{if(!three)return;let w=host.clientWidth,h=host.clientHeight;camera.aspect=w/h;camera.updateProjectionMatrix();renderer.setSize(w,h)});three.ro.observe(host);
+function render(){if(!three||three.renderer!==renderer)return;three.frame=requestAnimationFrame(render);renderer.render(scene,camera);gps3D()}render();
+let cv=await imagery(c);if(id!==loadId||!three)return;if(cv){let texture=new T.CanvasTexture(cv);texture.colorSpace=T.SRGBColorSpace;three.satMat=new T.MeshStandardMaterial({map:texture,side:T.DoubleSide});if(three.view==='satellite')mesh.material=three.satMat;status('3D satellite terrain ready')}else status('3D relief ready · imagery unavailable')
+}catch(e){status('3D error: '+e.message);stop3D()}}
+function stop3D(invalidate=true){if(invalidate)loadId++;if(!three){$('terrain').style.display='none';mode='2d';return}let g=three;cancelAnimationFrame(g.frame);g.ro?.disconnect();g.renderer.dispose();g.geom.dispose();g.mat.dispose();g.satMat?.map?.dispose();g.satMat?.dispose();g.host.replaceChildren();g.host.style.display='none';three=null;mode='2d';$('gpsPin').style.display='none';map.invalidateSize();gps2D()}
+async function centerOn(p,z=16){location=[...p];if(mode==='2d'){map.setView(p,z);gps2D();return}if(!three)return;let q=geoToWorld(p);if(q.inside&&Math.abs(q.x)<three.W*.34&&Math.abs(q.z)<three.D*.34){three.cx=q.x;three.cz=q.z;three.cy=ground(q.x,q.z);three.dist=Math.max(three.dist,Math.max(three.W,three.D)*.17);cameraUpdate();update3DMarkers();status('3D centered')}else{stop3D();await start3D(true)}}
+function requestGPS(){if(!navigator.geolocation)return status('GPS unavailable');if(!isSecureContext)return status('GPS requires HTTPS');status('Requesting GPS…');navigator.geolocation.getCurrentPosition(async pos=>{gps=[pos.coords.latitude,pos.coords.longitude];await centerOn(gps);gps2D();gps3D();status('GPS centered · stand unchanged');fetchWeather()},err=>status('GPS error: '+err.message),{enableHighAccuracy:true,timeout:15000,maximumAge:30000})}
+let lastFollow=null,updating=false;function follow(){if(following){following=false;navigator.geolocation.clearWatch(watch);watch=null;$('follow').textContent='▶ Follow Me';status('GPS follow stopped');return}if(!navigator.geolocation||!isSecureContext)return status('GPS requires HTTPS');following=true;lastFollow=null;$('follow').textContent='■ Stop Following';watch=navigator.geolocation.watchPosition(async pos=>{if(!following)return;let p=[pos.coords.latitude,pos.coords.longitude];gps=p;gps2D();gps3D();if(updating)return;let dist=lastFollow?Math.hypot((p[0]-lastFollow[0])*111320,(p[1]-lastFollow[1])*94000):Infinity;if(dist<4)return;updating=true;try{await centerOn(p);lastFollow=p}catch(e){status(e.message)}finally{updating=false}},err=>{status('GPS: '+err.message);if(err.code===1)follow()},{enableHighAccuracy:true,maximumAge:1000,timeout:20000})}
+async function fetchWeather(){$('forecast').textContent='Loading forecast…';try{let p=location,r=await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${p[0]}&longitude=${p[1]}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&forecast_days=7&wind_speed_unit=mph&timezone=auto`);if(!r.ok)throw Error('HTTP '+r.status);weather=await r.json();let c=weather.current;selected={dir:Math.round(c.wind_direction_10m),speed:Math.round(c.wind_speed_10m),gust:Math.round(c.wind_gusts_10m)};$('forecast').textContent=`Model wind FROM ${selected.dir}° ${card(selected.dir)} · ${selected.speed} mph · gust ${selected.gust} mph · Open-Meteo`;$('hours').replaceChildren();weather.hourly.time.forEach((t,i)=>{let o=document.createElement('option');o.value=i;o.textContent=`${t.replace('T',' ')} · ${Math.round(weather.hourly.wind_direction_10m[i])}° · ${Math.round(weather.hourly.wind_speed_10m[i])} mph`;$('hours').appendChild(o)});$('hours').value=Math.max(0,weather.hourly.time.findIndex(t=>t>=c.time.slice(0,13)))}catch(e){$('forecast').textContent='Weather unavailable: '+e.message}}
+function applyWeather(w){if(!w)return;selected=w;setBearing(w.dir,false);$('speed').value=clamp(w.speed,0,30);$('gust').value=clamp(w.gust,0,50);$('source').value='forecast';sync();status('Forecast applied')}
+function showTab(n){for(let b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b.dataset.tab===n);for(let s of document.querySelectorAll('.section'))s.classList.toggle('active',s.id===(n==='terrain'?'terrainControls':n));$('panel').classList.remove('hidden');$('open').style.display='none'}
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
+$('close').onclick=()=>{$('panel').classList.add('hidden');$('open').style.display='block'};$('open').onclick=()=>showTab('weather');
+$('clean').onclick=()=>{for(let n of ['actions','panel','compass','open','clean','pinPanel'])$(n).classList.add('hidden');$('restore').classList.remove('hidden')};
+$('pinCancel').onclick=()=>$('pinPanel').classList.add('hidden');$('pinSave').onclick=()=>{if(!pendingPin&&!editingPin)return status('Tap Add Pin, or select a pin');let type=$('pinType').value,color=$('pinColor').value,name=$('pinName').value.trim(),p=editingPin?pinsData.find(x=>x.id===editingPin):null;if(p){Object.assign(p,{name,type,color})}else{p={id:'p'+Date.now()+Math.random().toString(36).slice(2),lat:pendingPin[0],lon:pendingPin[1],name:name||'Pin '+(pinsData.length+1),type,color};pinsData.push(p)}if(type==='stand')selectActive(p.id);savePins();updatePins();$('pinPanel').classList.add('hidden');status('Pin saved')};$('pinDelete').onclick=()=>{if(!editingPin||!confirm('Delete this pin?'))return;pinsData=pinsData.filter(x=>x.id!==editingPin);if(activePin===editingPin)activePin=pinsData.find(x=>x.type==='stand')?.id||null;savePins();selectActive(activePin);$('pinPanel').classList.add('hidden');status('Pin deleted')};$('pinFocus').onclick=()=>{let p=pinsData.find(x=>x.id===editingPin);if(!p)return;if(p.type==='stand')selectActive(p.id);centerOn([p.lat,p.lon],17);$('pinPanel').classList.add('hidden')};$('pinExport').onclick=()=>{let blob=new Blob([JSON.stringify({version:'9.2.2',pins:pinsData},null,2)],{type:'application/json'}),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download='wind-lab-pins-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)};$('pinImport').onclick=()=>$('pinFile').click();$('pinFile').onchange=async e=>{try{let data=JSON.parse(await e.target.files[0].text());if(!Array.isArray(data.pins)||!confirm('Replace saved pins with this backup?'))return;let valid=data.pins.filter(p=>Number.isFinite(p.lat)&&Number.isFinite(p.lon)&&typeof p.id==='string'&&/^#[0-9a-f]{6}$/i.test(p.color)&&['stand','scout','bedding','sign','access','funnel'].includes(p.type)).map(p=>({...p,name:String(p.name||'').slice(0,80)}));if(!valid.length)throw Error('No valid pins');pinsData=valid;activePin=pinsData.find(p=>p.type==='stand')?.id||null;savePins();selectActive(activePin);renderPinList();status('Pins imported')}catch(err){status('Import failed: '+err.message)}e.target.value=''};$('restore').onclick=()=>{for(let n of ['actions','compass','clean'])$(n).classList.remove('hidden');$('restore').classList.add('hidden');showTab('weather')};
+$('gps').onclick=requestGPS;$('follow').onclick=follow;$('goStand').onclick=()=>centerOn(stand,17);$('home').onclick=()=>centerOn(HOME,15);
+$('place').onclick=()=>{placement='stand';status('Tap map or terrain to add stand')};$('record').onclick=()=>{placement='obs';status('Tap map or terrain to record wind')};$('addPin').onclick=()=>{placement='pin';status('Tap map or terrain to add a pin')};$('pins').onclick=()=>{editingPin=null;pendingPin=null;$('pinHeading').textContent='Saved pins';$('pinDelete').disabled=true;showPinPanel()};$('menu').onclick=()=>$('actions').classList.toggle('collapsed');$('coneMode').onclick=()=>{conesMode=conesMode==='all'?'selected':'all';$('coneMode').textContent=conesMode==='all'?'🌬 All Cones':'🌬 One Cone';updatePins();status(conesMode==='all'?'Showing all stand cones':'Showing active stand cone')};
+function north(){if(three){three.theta=0;cameraUpdate()}status('North up')};$('north').onclick=$('north2').onclick=north;
+$('direction').oninput=e=>setBearing(+e.target.value);$('minus').onclick=()=>setBearing(bearing-5);$('plus').onclick=()=>setBearing(bearing+5);
+for(let n of ['speed','gust'])$(n).oninput=()=>{$('source').value='manual';sync()};$('spread').onchange=sync;
+for(let n of ['density','motion','eddyStrength','influence','turbulence'])$(n).oninput=e=>$(n+'Text').textContent=e.target.value+(['eddyStrength','influence','turbulence'].includes(n)?'%':n==='motion'?'×':'');
+$('animate').onclick=()=>{animation=!animation;$('animate').textContent='Animation: '+(animation?'On':'Off')};
+$('enable').onclick=()=>start3D();$('back').onclick=()=>stop3D();
+$('tilt').oninput=e=>{$('tiltText').textContent=e.target.value+'°';if(three){three.phi=Math.PI/2-v('tilt')*Math.PI/180;cameraUpdate()}};
+$('height').oninput=e=>{$('heightText').textContent=e.target.value+'×';if(three){let g=three,p=g.geom.attributes.position;for(let i=0;i<p.count;i++)p.setY(i,ground(p.getX(i),p.getZ(i)));p.needsUpdate=true;g.geom.computeVertexNormals();g.cy=ground(g.cx,g.cz);cameraUpdate();update3DMarkers()}};
+$('shade').oninput=e=>$('shadeText').textContent=e.target.value+'%';
+$('left').onclick=()=>{if(three){three.theta-=Math.PI/6;cameraUpdate()}};$('right').onclick=()=>{if(three){three.theta+=Math.PI/6;cameraUpdate()}};
+$('relief').onclick=()=>{if(three){three.view='relief';three.mesh.material=three.mat}};$('satellite').onclick=()=>{if(three){three.view='satellite';three.mesh.material=three.satMat||three.mat}};
+$('zoomIn').onclick=()=>{if(three){three.dist*=.72;cameraUpdate()}};$('zoomOut').onclick=()=>{if(three){three.dist*=1.38;cameraUpdate()}};
+$('refresh').onclick=fetchWeather;$('current').onclick=()=>{if(weather){let c=weather.current;applyWeather({dir:c.wind_direction_10m,speed:c.wind_speed_10m,gust:c.wind_gusts_10m})}};
+$('apply').onclick=()=>{if(!weather)return;let i=+$('hours').value,h=weather.hourly;applyWeather({dir:h.wind_direction_10m[i],speed:h.wind_speed_10m[i],gust:h.wind_gusts_10m[i]})};
+$('source').onchange=()=>{if($('source').value==='forecast')applyWeather(selected)};
+$('obsDir').oninput=()=>{$('obsDirText').textContent=v('obsDir')+'°'};$('obsSpeed').oninput=()=>{$('obsSpeedText').textContent=v('obsSpeed')+' mph'};
+$('saveObs').onclick=()=>{if(!obsTarget)return status('Select a location first');observations.push({lat:obsTarget[0],lon:obsTarget[1],dir:v('obsDir'),speed:v('obsSpeed')});obsTarget=null;drawObs();update3DMarkers();status('Observation saved')};
+$('clearObs').onclick=()=>{observations=[];drawObs();update3DMarkers();status('Observations cleared')};
+let dial=$('dial'),turning=false;function turn(e){let r=dial.getBoundingClientRect(),x=e.clientX-r.left-r.width/2,y=e.clientY-r.top-r.height/2;setBearing(Math.atan2(x,-y)*180/Math.PI)}
+dial.onpointerdown=e=>{e.preventDefault();turning=true;dial.setPointerCapture(e.pointerId);turn(e)};dial.onpointermove=e=>{if(turning){e.preventDefault();turn(e)}};dial.onpointerup=dial.onpointercancel=()=>turning=false;
+let handle=$('handle'),drag=false,ox=0,oy=0;handle.onpointerdown=e=>{e.preventDefault();drag=true;let r=$('compass').getBoundingClientRect();ox=e.clientX-r.left;oy=e.clientY-r.top;handle.setPointerCapture(e.pointerId)};
+handle.onpointermove=e=>{if(!drag)return;let r=$('app').getBoundingClientRect(),c=$('compass');c.style.left=clamp(e.clientX-r.left-ox,0,r.width-c.offsetWidth)+'px';c.style.top=clamp(e.clientY-r.top-oy,0,r.height-c.offsetHeight)+'px'};handle.onpointerup=handle.onpointercancel=()=>drag=false;
+window.addEventListener('pagehide',()=>{if(watch!==null)navigator.geolocation.clearWatch(watch)});
+// Screen-space wind flow: independent canvas above both 2D and 3D.
+const windCanvas=$('windCanvas'),wctx=windCanvas.getContext('2d');let particles=[],lastWindFrame=0;
+function windPoint(x,y){if(mode==='2d'){let latlon=map.containerPointToLatLng([x,y]);return [latlon.lat,latlon.lng]}if(!three)return null;let g=three,ray=new g.T.Raycaster(),ndc=new g.T.Vector2(x/windCanvas.clientWidth*2-1,1-y/windCanvas.clientHeight*2);ray.setFromCamera(ndc,g.camera);let hit=ray.intersectObject(g.mesh);return hit.length?worldToGeo(hit[0].point.x,hit[0].point.z):null}
+function windScreen(p){if(mode==='2d'){let q=map.latLngToContainerPoint(p);return [q.x,q.y]}if(!three)return null;let q=geoToWorld(p);if(!q.inside)return null;let vec=new three.T.Vector3(q.x,ground(q.x,q.z)+7,q.z).project(three.camera);return vec.z>=-1&&vec.z<=1?[(vec.x+1)*windCanvas.clientWidth/2,(1-vec.y)*windCanvas.clientHeight/2]:null}
+function flowAt(p){let d=norm(bearing+180),turn=0,accel=1,rough=0;if(three&&$('simulation').value==='on'){let q=geoToWorld(p);if(q.inside){let rad=d*Math.PI/180,dx=Math.sin(rad)*35,dz=-Math.cos(rad)*35;let front=ground(q.x+dx,q.z+dz),back=ground(q.x-dx,q.z-dz),left=ground(q.x-dz,q.z+dx),right=ground(q.x+dz,q.z-dx);let slope=(front-back)/70,cross=(left-right)/70;turn=clamp(cross*v('influence')*.12,-45,45);accel=clamp(1+Math.abs(slope)*.17,.65,2);rough=Math.abs(cross)+Math.abs(slope)}}return{d:norm(d+turn),accel,rough}}
+function windLoop(t){requestAnimationFrame(windLoop);if(t-lastWindFrame<30)return;let w=windCanvas.clientWidth,h=windCanvas.clientHeight;if(!w||!h)return;let ratio=Math.min(devicePixelRatio||1,2);if(windCanvas.width!==Math.round(w*ratio)||windCanvas.height!==Math.round(h*ratio)){windCanvas.width=Math.round(w*ratio);windCanvas.height=Math.round(h*ratio);wctx.setTransform(ratio,0,0,ratio,0,0)}wctx.clearRect(0,0,w,h);let dt=Math.min(.05,(t-lastWindFrame||16)/1000);lastWindFrame=t;if(!animation||!v('speed'))return;let n=mode==='3d'?Math.min(250,v('density')):v('density');while(particles.length<n)particles.push({x:Math.random()*w,y:Math.random()*h,life:Math.random()*120});particles.length=n;wctx.lineWidth=1.8;wctx.lineCap='round';for(let a of particles){let p=windPoint(a.x,a.y);if(!p){a.x=Math.random()*w;a.y=Math.random()*h;continue}let f=flowAt(p),next=dest(p,f.d,Math.max(2,v('speed')*v('motion')*.6*f.accel)),xy=windScreen(next);if(!xy){a.x=Math.random()*w;a.y=Math.random()*h;continue}let dx=xy[0]-a.x,dy=xy[1]-a.y,l=Math.hypot(dx,dy);if(l<.05||l>100){a.x=Math.random()*w;a.y=Math.random()*h;continue}let step=clamp(v('speed')*v('motion')*dt*.45,0,12);dx=dx/l*step;dy=dy/l*step;let color=$('color').value;wctx.strokeStyle=color==='white'?'rgba(255,255,255,.95)':color==='cyan'?'#4ef2ff':f.rough>1.3?'#ff5757':f.rough>.35?'#ffd84b':'#62ff91';wctx.beginPath();wctx.moveTo(a.x,a.y);wctx.lineTo(a.x+dx*2.5,a.y+dy*2.5);wctx.stroke();a.x+=dx;a.y+=dy;if(++a.life>150||a.x<0||a.y<0||a.x>w||a.y>h){a.x=Math.random()*w;a.y=Math.random()*h;a.life=0}}}
+requestAnimationFrame(windLoop);
+initMap();fetchWeather();
+</script></body></html>
