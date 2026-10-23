@@ -1,4 +1,3 @@
-
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <div id="awl77">
@@ -37,14 +36,15 @@ html,body{margin:0;height:100%;overflow:hidden}
 #awl77 .stands{transform:scale(.75);transform-origin:top right}
 #awl77 .gps-beacon{width:20px;height:20px;position:relative;pointer-events:none}
 #awl77 .gps-beacon:before{content:"";position:absolute;inset:-7px;background:#369cff55;border:1px solid #6cbeff;border-radius:50%;animation:a77gpsPulse 2s ease-out infinite}
-#awl77 .gps-
-beacon:after{content:"";position:absolute;inset:0;background:#1688ff;border:3px solid white;border-radius:50%;box-shadow:0 0 5px #002b56}
+#awl77 .gps-beacon:after{content:"";position:absolute;inset:0;background:#1688ff;border:3px solid white;border-radius:50%;box-shadow:0 0 5px #002b56}
 #awl77 .gps-beacon.stale:before{animation:none;background:#9ba5ad44;border-color:#adb8c0}
 #awl77 .gps-beacon.stale:after{background:#7e8d9a}
 #awl77 button[aria-pressed="true"]{background:#b8dcc3;color:#173a26;font-weight:bold}
 @keyframes a77gpsPulse{0%{transform:scale(.65);opacity:.9}100%{transform:scale(1.8);opacity:0}}
 @media(prefers-reduced-motion:reduce){#awl77 .gps-beacon:before{animation:none}}
 #awl77 .gps-beacon{opacity:1!important}
+#awl77 .gps-beacon.surface-beacon{position:absolute;left:0;top:0;z-index:900;pointer-events:none;will-change:transform}
+#awl77 .gps-beacon:after{background:#0047cc!important}
 </style>
 
 <div id="a77map" class="map"></div>
@@ -218,11 +218,11 @@ const CDN="https://unpkg.com/maplibre-gl@5.6.2/dist/";
 const DEM="https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
 const SAT="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 let map,ML,ready=false,mode="2d",bearing=315,stand=HOME.slice(),propertyStand=HOME.slice(),area=HOME.slice(),gps=null;
-let placing=false,dragging=false,animation=true,standMarker,gpsMarker,exaggeration=3,preferredView="satellite";
+let placing=false,dragging=false,animation=true,standMarker,exaggeration=3,preferredView="satellite";
 let statusTimer,buildTimer,matrix=null,field=null,eddyCenters=[],windClock=0,lastTime=0;
 let searchToken=0,searchController=null,lastTileBuild=0;
-let gpsWatch=null,gpsSession=0,gpsFix=null,gpsTimer=null;
-let following=false,gpsCenterPending=false,gpsStandPending=false,gpsError="";
+let gpsWatch=null,gpsSession=0,gpsFix=null,gpsTimer=null,gpsBeacon=null;
+let following=false,gpsCenterPending=false,gpsStandPending=false,gpsError="",gpsCameraUpdating=false;
 const N=65,MAX=600;
 let coverageRegions=[];
 const particles=Array.from({length:MAX},()=>({valid:false,x:Math.random(),y:Math.random(),wx:0,wz:0,band:0,life:0,region:null,factor:.8+Math.random()*.4}));
@@ -252,33 +252,33 @@ function buildRegion(coverageSpan){if(!ready||mode!=="3d"||map.isMoving())return
 // Keep the original close terrain grid, and add progressively wider grids.
 // A tilted camera can see much farther than a zoom-only square accounts for.
 function buildField(){
- coverageRegions=[];
- buildRegion();
- if(!field||mode!=="3d"||map.isMoving())return;
- const near=field;
- near.eddies=eddyCenters;
- coverageRegions.push(near);
- let reach=near.span;
- const w=root.clientWidth,h=root.clientHeight;
- for(let row=0;row<=12;row++){
-  for(let col=0;col<=8;col++){
-   const q=map.unproject([col*w/8,row*h/12]);
-   if(!Number.isFinite(q.lat)||!Number.isFinite(q.lng))continue;
-   const v=toLocal([q.lat,q.lng]);
-   reach=Math.max(reach,2.3*Math.max(Math.abs(v.x),Math.abs(v.z)));
-  }
- }
- reach=Math.min(reach,240000);
- let span=near.span;
- while(span<reach&&coverageRegions.length<5){
-  span=Math.min(span*4,reach);
-  buildRegion(span);
-  if(field){field.eddies=eddyCenters;coverageRegions.push(field);}
- }
- field=near;
- eddyCenters=near.eddies;
- resetParticles();
- updateInfo();
+ coverageRegions=[];
+ buildRegion();
+ if(!field||mode!=="3d"||map.isMoving())return;
+ const near=field;
+ near.eddies=eddyCenters;
+ coverageRegions.push(near);
+ let reach=near.span;
+ const w=root.clientWidth,h=root.clientHeight;
+ for(let row=0;row<=12;row++){
+  for(let col=0;col<=8;col++){
+   const q=map.unproject([col*w/8,row*h/12]);
+   if(!Number.isFinite(q.lat)||!Number.isFinite(q.lng))continue;
+   const v=toLocal([q.lat,q.lng]);
+   reach=Math.max(reach,2.3*Math.max(Math.abs(v.x),Math.abs(v.z)));
+  }
+ }
+ reach=Math.min(reach,240000);
+ let span=near.span;
+ while(span<reach&&coverageRegions.length<5){
+  span=Math.min(span*4,reach);
+  buildRegion(span);
+  if(field){field.eddies=eddyCenters;coverageRegions.push(field);}
+ }
+ field=near;
+ eddyCenters=near.eddies;
+ resetParticles();
+ updateInfo();
 }
 
 function scheduleBuild(){clearTimeout(buildTimer);buildTimer=setTimeout(buildField,180);}
@@ -287,22 +287,22 @@ function project(x,z){if(!field||!matrix||!inside(x,z))return null;const f=flowA
 function colors(i){switch(el("color").value){case "contrast":return [["#6af69c","#061b10"],["#ffd45c","#241808"],["#ff6565","#260707"]][i%3];case "cyan":return ["#65F6FF","#071b22"];case "magenta":return ["#FF35D4","#ffffff"];default:return ["#FFFFFF","#080b0e"];}}
 function stroke(points,c){ctx.lineCap="round";ctx.lineJoin="round";for(let pass=0;pass<2;pass++){ctx.beginPath();points.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.strokeStyle=pass?c[0]:c[1];ctx.lineWidth=pass?1.4:2.5;ctx.stroke();}}
 function spawn(p,w,h){
- p.valid=false;
- for(let tries=0;tries<18;tries++){
-  const q=map.unproject([Math.random()*w,(p.band+Math.random())*h/4]);
-  for(const region of coverageRegions){
-   field=region;
-   const v=toLocal([q.lat,q.lng]);
-   if(!inside(v.x,v.z))continue;
-   eddyCenters=region.eddies;
-   const screen=project(v.x,v.z);
-   if(!screen||screen.x<0||screen.y<0||screen.x>w||screen.y>h)continue;
-   // Retain the chosen distance grid for the lifetime of this particle.
-   p.wx=v.x;p.wz=v.z;p.region=region;
-   p.life=3+Math.random()*5;p.valid=true;
-   return;
-  }
- }
+ p.valid=false;
+ for(let tries=0;tries<18;tries++){
+  const q=map.unproject([Math.random()*w,(p.band+Math.random())*h/4]);
+  for(const region of coverageRegions){
+   field=region;
+   const v=toLocal([q.lat,q.lng]);
+   if(!inside(v.x,v.z))continue;
+   eddyCenters=region.eddies;
+   const screen=project(v.x,v.z);
+   if(!screen||screen.x<0||screen.y<0||screen.x>w||screen.y>h)continue;
+   // Retain the chosen distance grid for the lifetime of this particle.
+   p.wx=v.x;p.wz=v.z;p.region=region;
+   p.life=3+Math.random()*5;p.valid=true;
+   return;
+  }
+ }
 }
 function windLoop(time){requestAnimationFrame(windLoop);if(coverageRegions.length){field=coverageRegions[0];eddyCenters=field.eddies;}const w=root.clientWidth,h=root.clientHeight,r=Math.min(devicePixelRatio||1,2);if(canvas.width!==Math.round(w*r)||canvas.height!==Math.round(h*r)){canvas.width=Math.round(w*r);canvas.height=Math.round(h*r);canvas.style.width=w+"px";canvas.style.height=h+"px";resetParticles();}ctx.setTransform(r,0,0,r,0,0);ctx.clearRect(0,0,w,h);const dt=Math.min((time-lastTime||16)/1000,.05);lastTime=time;if(!ready||!animation||map.isMoving()||+el("speed").value<=0)return;windClock+=dt;const speed=+el("speed").value,motion=+el("motion").value,count=+el("density").value,length=6+Math.min(4,speed/7.5);if(mode==="2d"){const a=(norm(bearing+180)-map.getBearing())*Math.PI/180,dx=Math.sin(a),dy=-Math.cos(a);for(let i=0;i<count;i++){const p=particles[i];p.x+=dx*speed*dt*motion*p.factor/35;p.y+=dy*speed*dt*motion*p.factor/35;if(p.x>1.03)p.x=-.03;if(p.x<-.03)p.x=1.03;if(p.y>1.03)p.y=-.03;if(p.y<-.03)p.y=1.03;stroke([{x:p.x*w,y:p.y*h},{x:p.x*w-dx*length,y:p.y*h-dy*length}],colors(i));}return;}if(!field||!matrix)return;for(let i=0;i<count;i++){const p=particles[i];p.life-=dt;if(p.life<=0)p.valid=false;if(p.valid){field=p.region;eddyCenters=field.eddies;}else{spawn(p,w,h);if(!p.valid)continue;}const f=flowAt(p.wx,p.wz),mag=Math.hypot(f.vx,f.vz);if(mag<.015){p.valid=false;continue;}const dx=f.vx/mag,dz=f.vz/mag,a=project(p.wx,p.wz),b=project(p.wx+dx*10,p.wz+dz*10);if(!a||!b){p.valid=false;continue;}const ppm=Math.hypot(b.x-a.x,b.y-a.y)/10;if(ppm<.00001){p.valid=false;continue;}let step=Math.min(speed*motion*w/35/ppm*dt*p.factor,field.span*.04);const limit=eddyCenters.length?Math.min(...eddyCenters.map(e=>e.radius))/12:field.span/100,steps=Math.min(12,Math.max(1,Math.ceil(step*2.2/limit)));step=Math.min(step,steps*limit/2.2);const ds=step/steps;for(let j=0;j<steps;j++){const v=flowAt(p.wx,p.wz),mid=flowAt(p.wx+v.vx*ds*.5,p.wz+v.vz*ds*.5);p.wx+=mid.vx*ds;p.wz+=mid.vz*ds;}const head=project(p.wx,p.wz);if(!head||head.x< -15||head.y< -15||head.x>w+15||head.y>h+15){p.valid=false;continue;}const len=Math.min(length/ppm,field.span*.04),pts=[];let x=p.wx,z=p.wz;for(let j=0;j<=5;j++){const q=project(x,z);if(!q){pts.length=0;break;}pts.push(q);const v=flowAt(x,z),m=Math.hypot(v.vx,v.vz);if(m<.015){pts.length=0;break;}x-=v.vx/m*len/5;z-=v.vz/m*len/5;}if(pts.length)stroke(pts,colors(i));}field=coverageRegions[0];eddyCenters=field.eddies;}
 function applyView(){if(!ready)return;map.setPaintProperty("satellite","raster-opacity",preferredView==="satellite"?1:0);map.setPaintProperty("hills","hillshade-exaggeration",preferredView==="relief"?.7:+el("shade").value/100);}
@@ -316,98 +316,130 @@ async function searchPlaces(e){e.preventDefault();const text=el("searchInput").v
 function emptyGPS(){return {type:"FeatureCollection",features:[]};}
 function gpsFresh(){return !!gpsFix&&Date.now()-gpsFix.timestamp<30000&&!gpsError;}
 function updateGPSInfo(){
- const active=gpsWatch!==null;
- const age=gpsFix?Math.max(0,Math.floor((Date.now()-gpsFix.timestamp)/1000)):0;
- const fresh=gpsFresh();
- if(gpsMarker)gpsMarker.getElement().classList.toggle("stale",!fresh);
- let message=gpsError?gpsError:!active?"GPS off":!gpsFix?"Waiting for GPS…":
-  (fresh?"GPS live":"Last GPS fix")+" · ±"+Math.round(gpsFix.accuracy*3.28084)+" ft"+
-  (age>=10?" · "+age+"s ago":"")+(following?" · following":"");
- el("gpsInfo").textContent=message;
- el("accuracy").textContent=message;
- el("follow").textContent="Follow Me: "+(following?(fresh?"on":"waiting…"):"off");
- el("follow").setAttribute("aria-pressed",String(following));
+ const active=gpsWatch!==null;
+ const age=gpsFix?Math.max(0,Math.floor((Date.now()-gpsFix.timestamp)/1000)):0;
+ const fresh=gpsFresh();
+ if(gpsBeacon)gpsBeacon.classList.toggle("stale",!fresh);
+ let message=gpsError?gpsError:!active?"GPS off":!gpsFix?"Waiting for GPS…":
+  (fresh?"GPS live":"Last GPS fix")+" · ±"+Math.round(gpsFix.accuracy*3.28084)+" ft"+
+  (age>=10?" · "+age+"s ago":"")+(following?" · following":"");
+ el("gpsInfo").textContent=message;
+ el("accuracy").textContent=message;
+ el("follow").textContent="Follow Me: "+(following?(fresh?"on":"waiting…"):"off");
+ el("follow").setAttribute("aria-pressed",String(following));
 }
 function pauseFollow(){following=false;gpsCenterPending=false;updateGPSInfo();}
+// Project the GPS point at the currently rendered DEM height, independently
+// of the wind grids. The DEM query already includes terrain exaggeration.
+function updateGPSPosition(){
+ if(!gpsBeacon||!gps||!ready)return;
+ let screen=null;
+ if(mode==="3d"){
+  const elevation=map.queryTerrainElevation(ll(gps));
+  if(matrix&&Number.isFinite(elevation)){
+   const p=ML.MercatorCoordinate.fromLngLat(ll(gps),elevation+2);
+   const m=matrix;
+   const w=m[3]*p.x+m[7]*p.y+m[11]*p.z+m[15];
+   if(w>0){
+    const x=(m[0]*p.x+m[4]*p.y+m[8]*p.z+m[12])/w;
+    const y=(m[1]*p.x+m[5]*p.y+m[9]*p.z+m[13])/w;
+    const z=(m[2]*p.x+m[6]*p.y+m[10]*p.z+m[14])/w;
+    if(Number.isFinite(x)&&Number.isFinite(y)&&z>=-1&&z<=1)
+     screen={x:(x+1)*root.clientWidth/2,y:(1-y)*root.clientHeight/2};
+   }
+  }
+ }else screen=map.project(ll(gps));
+ const visible=screen&&screen.x>=-30&&screen.x<=root.clientWidth+30&&screen.y>=-30&&screen.y<=root.clientHeight+30;
+ gpsBeacon.style.display=visible?"block":"none";
+ if(visible)gpsBeacon.style.transform="translate("+screen.x+"px,"+screen.y+"px) translate(-50%,-50%)";
+}
 function drawGPSAccuracy(){
- const source=ready&&map.getSource("gps-accuracy");
- if(!source)return;
- if(!gpsFix){source.setData(emptyGPS());return;}
- const ring=[];
- for(let i=0;i<=64;i++)ring.push(ll(destination(gps,i*360/64,gpsFix.accuracy)));
- source.setData({type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[ring]}});
+ const source=ready&&map.getSource("gps-accuracy");
+ if(!source)return;
+ if(!gpsFix){source.setData(emptyGPS());return;}
+ const ring=[];
+ for(let i=0;i<=64;i++)ring.push(ll(destination(gps,i*360/64,gpsFix.accuracy)));
+ source.setData({type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[ring]}});
 }
 function centerGPS(initial=false){
- if(!ready||!gpsFresh())return;
- const target=map.project(ll(gps));
- if(!initial&&Math.hypot(target.x-root.clientWidth/2,target.y-root.clientHeight/2)<4)return;
- map.easeTo({center:ll(gps),zoom:initial?Math.max(16,map.getZoom()):map.getZoom(),duration:initial?650:350});
+ if(!ready||!gpsFresh()||gpsCameraUpdating)return;
+ const height=mode==="3d"?map.queryTerrainElevation(ll(gps)):0;
+ if(Number.isFinite(height)&&Math.abs(map.getCenterElevation()-height)>.5){
+  gpsCameraUpdating=true;
+  try{map.setCenterElevation(height);}finally{gpsCameraUpdating=false;}
+ }
+ const target=map.project(ll(gps));
+ if(!initial&&Math.hypot(target.x-root.clientWidth/2,target.y-root.clientHeight/2)<4)return;
+ map.easeTo({center:ll(gps),zoom:initial?Math.max(16,map.getZoom()):map.getZoom(),duration:initial?650:350});
 }
 function receiveGPS(pos){
- const c=pos.coords,p=[c.latitude,c.longitude];
- if(!validCoordinates(p)||!Number.isFinite(c.accuracy)||c.accuracy<0)return;
- const timestamp=Number.isFinite(pos.timestamp)?pos.timestamp:Date.now();
- if(gpsFix&&timestamp<gpsFix.timestamp)return;
- gps=p;gpsFix={timestamp,accuracy:c.accuracy};gpsError="";
- if(!gpsMarker){
-  const dot=document.createElement("div");dot.className="gps-beacon";
-  dot.setAttribute("role","img");dot.setAttribute("aria-label","Your GPS location");
-  gpsMarker=new ML.Marker({element:dot}).setLngLat(ll(gps)).addTo(map);
- }else gpsMarker.setLngLat(ll(gps));
- drawGPSAccuracy();
- const fresh=gpsFresh();
- if(gpsStandPending&&fresh){gpsStandPending=false;setStand(gps);status("Stand set at GPS");}
- if(fresh&&(following||gpsCenterPending)){
-  const initial=gpsCenterPending;gpsCenterPending=false;centerGPS(initial);
- }
- updateGPSInfo();
+ const c=pos.coords,p=[c.latitude,c.longitude];
+ if(!validCoordinates(p)||!Number.isFinite(c.accuracy)||c.accuracy<0)return;
+ const timestamp=Number.isFinite(pos.timestamp)?pos.timestamp:Date.now();
+ if(gpsFix&&timestamp<gpsFix.timestamp)return;
+ gps=p;gpsFix={timestamp,accuracy:c.accuracy};gpsError="";
+ if(!gpsBeacon){
+  gpsBeacon=document.createElement("div");
+  gpsBeacon.className="gps-beacon surface-beacon";
+  gpsBeacon.setAttribute("role","img");
+  gpsBeacon.setAttribute("aria-label","Your GPS location");
+  root.appendChild(gpsBeacon);
+ }
+ updateGPSPosition();
+ drawGPSAccuracy();
+ const fresh=gpsFresh();
+ if(gpsStandPending&&fresh){gpsStandPending=false;setStand(gps);status("Stand set at GPS");}
+ if(fresh&&(following||gpsCenterPending)){
+  const initial=gpsCenterPending;gpsCenterPending=false;centerGPS(initial);
+ }
+ updateGPSInfo();
 }
 function stopGPS(message="GPS stopped"){
- gpsSession++;
- if(gpsWatch!==null)navigator.geolocation.clearWatch(gpsWatch);
- gpsWatch=null;
- clearInterval(gpsTimer);gpsTimer=null;
- following=false;gpsCenterPending=false;gpsStandPending=false;
- gpsFix=null;gps=null;gpsError="";
- if(gpsMarker){gpsMarker.remove();gpsMarker=null;}
- drawGPSAccuracy();updateGPSInfo();
- if(message)status(message);
+ gpsSession++;
+ if(gpsWatch!==null)navigator.geolocation.clearWatch(gpsWatch);
+ gpsWatch=null;
+ clearInterval(gpsTimer);gpsTimer=null;
+ following=false;gpsCenterPending=false;gpsStandPending=false;
+ gpsFix=null;gps=null;gpsError="";
+ if(gpsBeacon){gpsBeacon.remove();gpsBeacon=null;}
+ drawGPSAccuracy();updateGPSInfo();
+ if(message)status(message);
 }
 function startGPS(){
- if(!ready){status("Wait for the map to load");return false;}
- if(!window.isSecureContext||!navigator.geolocation){status("GPS requires a secure browser with location access");return false;}
- if(gpsWatch!==null)return true;
- const session=++gpsSession;
- gpsError="";
- try{
-  gpsWatch=navigator.geolocation.watchPosition(
-   pos=>{if(session===gpsSession)receiveGPS(pos);},
-   error=>{
-    if(session!==gpsSession)return;
-    if(error.code===1){stopGPS("");gpsError="Location permission denied. Allow location for this site in your browser settings.";}
-    else gpsError=error.code===3?"GPS timed out · waiting for another fix":"GPS unavailable · waiting for another fix";
-    updateGPSInfo();status(gpsError);
-   },
-   {enableHighAccuracy:true,timeout:20000,maximumAge:0}
-  );
-  gpsTimer=setInterval(updateGPSInfo,5000);
-  updateGPSInfo();
-  return true;
- }catch(error){stopGPS("");status("GPS: "+error.message);return false;}
+ if(!ready){status("Wait for the map to load");return false;}
+ if(!window.isSecureContext||!navigator.geolocation){status("GPS requires a secure browser with location access");return false;}
+ if(gpsWatch!==null)return true;
+ const session=++gpsSession;
+ gpsError="";
+ try{
+  gpsWatch=navigator.geolocation.watchPosition(
+   pos=>{if(session===gpsSession)receiveGPS(pos);},
+   error=>{
+    if(session!==gpsSession)return;
+    if(error.code===1){stopGPS("");gpsError="Location permission denied. Allow location for this site in your browser settings.";}
+    else gpsError=error.code===3?"GPS timed out · waiting for another fix":"GPS unavailable · waiting for another fix";
+    updateGPSInfo();status(gpsError);
+   },
+   {enableHighAccuracy:true,timeout:20000,maximumAge:0}
+  );
+  gpsTimer=setInterval(updateGPSInfo,5000);
+  updateGPSInfo();
+  return true;
+ }catch(error){stopGPS("");status("GPS: "+error.message);return false;}
 }
 function requestGPS(move){
- if(!startGPS())return;
- gpsStandPending=!!move;gpsCenterPending=true;
- if(gpsFresh())receiveGPS({coords:{latitude:gps[0],longitude:gps[1],accuracy:gpsFix.accuracy},timestamp:gpsFix.timestamp});
- else status("Waiting for GPS permission or a location fix…");
+ if(!startGPS())return;
+ gpsStandPending=!!move;gpsCenterPending=true;
+ if(gpsFresh())receiveGPS({coords:{latitude:gps[0],longitude:gps[1],accuracy:gpsFix.accuracy},timestamp:gpsFix.timestamp});
+ else status("Waiting for GPS permission or a location fix…");
 }
 function toggleFollow(){
- if(following){pauseFollow();status("Follow Me off · GPS beacon stays live");return;}
- if(!startGPS())return;
- following=true;gpsCenterPending=true;
- if(gpsFresh()){gpsCenterPending=false;centerGPS(true);}
- else status("Follow Me waiting for GPS…");
- updateGPSInfo();
+ if(following){pauseFollow();status("Follow Me off · GPS beacon stays live");return;}
+ if(!startGPS())return;
+ following=true;gpsCenterPending=true;
+ if(gpsFresh()){gpsCenterPending=false;centerGPS(true);}
+ else status("Follow Me waiting for GPS…");
+ updateGPSInfo();
 }
 window.addEventListener("pagehide",()=>stopGPS(""));
 function showTab(name){for(const tab of ["wind","gust","terrain","eddy","more"]){el(tab).classList.toggle("hidden",tab!==name);root.querySelector('[data-tab="'+tab+'"]').classList.toggle("active",tab===name);}el("panel").classList.remove("hidden");el("open").classList.add("hidden");}
@@ -443,16 +475,20 @@ function wireCompass(target,type){target.addEventListener("pointerdown",e=>{e.pr
 wireCompass(el("move"),"move");wireCompass(el("wheel"),"turn");el("bearingButton").addEventListener("pointerdown",e=>e.stopPropagation());
 refresh();requestAnimationFrame(windLoop);
 try{
- css(CDN+"maplibre-gl.css");if(!window.maplibregl)await script(CDN+"maplibre-gl.js");ML=window.maplibregl;
- map=new ML.Map({container:el("map"),center:ll(HOME),zoom:15,pitch:0,maxPitch:75,minZoom:2,maxZoom:19,renderWorldCopies:false,pixelRatio:Math.min(devicePixelRatio||1,2),attributionControl:{compact:true},style:{version:8,sources:{satellite:{type:"raster",tiles:[SAT],tileSize:256,maxzoom:19,attribution:"© Esri"},terrain:{type:"raster-dem",tiles:[DEM],tileSize:256,maxzoom:15,encoding:"terrarium",attribution:"Elevation: Mapzen / AWS"},shade:{type:"raster-dem",tiles:[DEM],tileSize:256,maxzoom:15,encoding:"terrarium"}},layers:[{id:"background",type:"background",paint:{"background-color":"#aac8a0"}},{id:"satellite",type:"raster",source:"satellite"},{id:"hills",type:"hillshade",source:"shade",paint:{"hillshade-exaggeration":.45}}]}});
- map.on("load",()=>{ready=true;map.addSource("gps-accuracy",{type:"geojson",data:emptyGPS()});
+ css(CDN+"maplibre-gl.css");if(!window.maplibregl)await script(CDN+"maplibre-gl.js");ML=window.maplibregl;
+ map=new ML.Map({container:el("map"),center:ll(HOME),zoom:15,pitch:0,maxPitch:75,minZoom:2,maxZoom:19,renderWorldCopies:false,pixelRatio:Math.min(devicePixelRatio||1,2),attributionControl:{compact:true},style:{version:8,sources:{satellite:{type:"raster",tiles:[SAT],tileSize:256,maxzoom:19,attribution:"© Esri"},terrain:{type:"raster-dem",tiles:[DEM],tileSize:256,maxzoom:15,encoding:"terrarium",attribution:"Elevation: Mapzen / AWS"},shade:{type:"raster-dem",tiles:[DEM],tileSize:256,maxzoom:15,encoding:"terrarium"}},layers:[{id:"background",type:"background",paint:{"background-color":"#aac8a0"}},{id:"satellite",type:"raster",source:"satellite"},{id:"hills",type:"hillshade",source:"shade",paint:{"hillshade-exaggeration":.45}}]}});
+ map.on("load",()=>{ready=true;map.addSource("gps-accuracy",{type:"geojson",data:emptyGPS()});
 map.addLayer({id:"gps-accuracy-fill",type:"fill",source:"gps-accuracy",paint:{"fill-color":"#299dff","fill-opacity":.15}});
 map.addLayer({id:"gps-accuracy-line",type:"line",source:"gps-accuracy",paint:{"line-color":"#65bdff","line-width":1.5,"line-opacity":.8}});map.addSource("scent",{type:"geojson",data:{type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[fanCoordinates()]}}});map.addLayer({id:"scent-fill",type:"fill",source:"scent",paint:{"fill-color":"#ffe132","fill-opacity":.32}});map.addLayer({id:"scent-line",type:"line",source:"scent",paint:{"line-color":"#ffe132","line-width":3}});map.addLayer({id:"wind-matrix",type:"custom",renderingMode:"3d",render(gl,args){matrix=Array.from(args.defaultProjectionData.mainMatrix);}});makeMarker(NORTH,"#ef4444",14);makeMarker(SOUTH,"#fb923c",14);standMarker=makeMarker(stand,"#ffdc20",23,dragging);standMarker.on("drag",()=>{const p=standMarker.getLngLat();stand=[p.lat,p.lng];refresh();});refresh();updateInfo();status("Continuous map ready · drag to explore");});
- map.on("click",e=>{if(placing){placing=false;setStand([e.lngLat.lat,e.lngLat.lng]);}});
- map.on("dragstart",()=>{if(following){pauseFollow();status("Follow Me paused · GPS beacon stays live");}});
- map.on("movestart",()=>{field=null;coverageRegions=[];resetParticles();});map.on("moveend",()=>{el("tiltText").textContent=Math.round(map.getPitch())+"°";if(mode==="3d")el("tilt").value=clamp(map.getPitch(),0,65);scheduleBuild();});map.on("idle",scheduleBuild);map.on("sourcedata",e=>{if(mode==="3d"&&e.sourceId==="terrain"&&!map.isMoving()&&performance.now()-lastTileBuild>700){lastTileBuild=performance.now();scheduleBuild();}});
- map.on("error",e=>{if(!ready)status("Map loading: "+(e.error?.message||"connection error"));});
- new ResizeObserver(()=>{map.resize();scheduleBuild();}).observe(root);
+ map.on("click",e=>{if(placing){placing=false;setStand([e.lngLat.lat,e.lngLat.lng]);}});
+ map.on("dragstart",()=>{if(following){pauseFollow();status("Follow Me paused · GPS beacon stays live");}});
+ map.on("movestart",()=>{field=null;coverageRegions=[];resetParticles();});map.on("moveend",()=>{el("tiltText").textContent=Math.round(map.getPitch())+"°";if(mode==="3d")el("tilt").value=clamp(map.getPitch(),0,65);scheduleBuild();});map.on("idle",scheduleBuild);map.on("sourcedata",e=>{if(mode==="3d"&&e.sourceId==="terrain"&&!map.isMoving()&&performance.now()-lastTileBuild>700){lastTileBuild=performance.now();scheduleBuild();}});
+ map.on("moveend",()=>{if(following&&gpsFresh())centerGPS(false);});
+ map.on("idle",()=>{if(following&&gpsFresh())centerGPS(false);});
+ map.on("terrain",()=>{updateGPSPosition();if(following&&gpsFresh())centerGPS(false);});
+ map.on("render",updateGPSPosition);
+ map.on("error",e=>{if(!ready)status("Map loading: "+(e.error?.message||"connection error"));});
+ new ResizeObserver(()=>{map.resize();scheduleBuild();}).observe(root);
 }catch(e){status("Map error: "+e.message);}
 })();
 
