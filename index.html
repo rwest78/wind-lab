@@ -31,7 +31,7 @@ html,body{margin:0;height:100%;overflow:hidden}
 #awl77 .note{font-size:10px;line-height:1.5}
 #awl77 .maplibregl-ctrl-attrib{font-size:8px}
 #awl77 .pin{border:2px solid white;border-radius:50%;box-shadow:0 0 5px #111}
-#awl77 .maplibregl-marker{pointer-events:auto} #awl77 .compass{transform:scale(.345);transform-origin:top right}
+#awl77 .maplibregl-marker{pointer-events:auto} #awl77 .compass{transform:scale(.39675);transform-origin:top right}
 #awl77 .panel{transform:scale(.75);transform-origin:bottom left}
 #awl77 .stands{transform:scale(.75);transform-origin:top right}
 #awl77 .gps-beacon{width:20px;height:20px;position:relative;pointer-events:none}
@@ -84,6 +84,7 @@ html,body{margin:0;height:100%;overflow:hidden}
 
 <div class="stands">
 <button id="a77standToggle">📍 Stand ▸</button>
+<button id="a77goStand">↩ Return to stand</button>
 <div id="a77standList" class="standlist hidden">
 <button id="a77place">Tap map to place stand</button>
 <button id="a77drag">Drag stand: off</button>
@@ -93,7 +94,6 @@ html,body{margin:0;height:100%;overflow:hidden}
 <div id="a77gpsInfo" class="note" aria-live="polite" style="max-width:180px">GPS off</div>
 <button id="a77gpsStand">Set stand at GPS</button>
 <button id="a77home">Return to property</button>
-<button id="a77goStand">Return to stand</button>
 <button id="a77resetStand">Reset stand</button>
 </div>
 </div>
@@ -113,6 +113,15 @@ html,body{margin:0;height:100%;overflow:hidden}
 
 <div id="a77wind">
 <div id="a77windSource" class="note">Wind input: manual</div>
+<div class="line">
+<label>Simulation mode
+<select id="a77simulationMode">
+<option value="terrain">Terrain airflow — 3D</option>
+<option value="straight">Straight wind</option>
+</select></label>
+<button id="a77animate" aria-pressed="true">Pause simulation</button>
+</div>
+<div id="a77simulationInfo" class="note" aria-live="polite"></div>
 <div class="line">
 <label for="a77windHeight">Wind height above terrain</label>
 <select id="a77windHeight">
@@ -223,7 +232,6 @@ html,body{margin:0;height:100%;overflow:hidden}
 
 <div class="line">
 <button id="a77resetWind">Reset wind</button>
-<button id="a77animate">Animation: on</button>
 </div>
 <div class="line">
 <label>Wind color
@@ -288,6 +296,7 @@ function windHeightMeters(){return windHeightFeet()*.3048;}
 // in physical meters, independent of the terrain-height slider.
 function windElevation(x,z){return ground(x,z)*exaggeration+windHeightMeters();}
 function updateWindHeightInfo(){
+ updateSimulationUI();
  el("windHeightInfo").textContent=windHeightFeet()+" ft above sampled terrain · "+
   (mode==="3d"?"fixed-height layer":"enable 3D to see height")+
   ". Same experimental horizontal flow at both heights.";
@@ -469,7 +478,13 @@ window.addEventListener("pagehide",()=>{weatherRequest++;if(weatherController)we
 window.addEventListener("pageshow",()=>{clearInterval(weatherAgeTimer);weatherAgeTimer=setInterval(()=>{if(weatherData||weatherApplied)updateWeatherUI();},60000);updateWeatherUI();});
 function validCoordinates(p){return p.length===2&&p.every(Number.isFinite)&&Math.abs(p[0])<=85&&Math.abs(p[1])<=180;}
 function goLocation(p,label,moveStand=true){if(!ready||!validCoordinates(p))return;pauseFollow();if(moveStand){if(Math.hypot((stand[0]-HOME[0])*111320,(stand[1]-HOME[1])*94000)<10000)propertyStand=stand.slice();setStand(p);}area=p.slice();placing=false;map.flyTo({center:ll(p),zoom:15,duration:1600});status("Viewing "+label);}
-function centerOn(p,zoom){pauseFollow();if(ready)map.flyTo({center:ll(p),zoom,duration:1000});}
+function centerOn(p,zoom){
+ pauseFollow();
+ if(!ready)return;
+ const elevation=mode==="3d"?map.queryTerrainElevation(ll(p)):0;
+ if(Number.isFinite(elevation))map.setCenterElevation(elevation);
+ map.flyTo({center:ll(p),zoom,duration:1000});
+}
 function parseCoordinates(text){const m=text.trim().match(/^([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)$/);return m?[Number(m[1]),Number(m[2])]:null;}
 async function searchPlaces(e){e.preventDefault();const text=el("searchInput").value.trim(),id=++searchToken;if(searchController)searchController.abort();el("searchResults").replaceChildren();el("searchButton").disabled=false;const coords=parseCoordinates(text);if(coords){if(!validCoordinates(coords)){el("searchInfo").textContent="Use latitude -85 to 85 and longitude -180 to 180.";return;}closePanel();goLocation(coords,text);return;}if(text.length<2){el("searchInfo").textContent="Enter a town, state, ZIP, or coordinates.";return;}const controller=new AbortController();searchController=controller;const timeout=setTimeout(()=>controller.abort(),15000);el("searchButton").disabled=true;el("searchInfo").textContent="Searching US places…";try{const url=new URL("https://geocoding-api.open-meteo.com/v1/search");url.search=new URLSearchParams({name:text,count:"8",language:"en",countryCode:"US"});const response=await fetch(url,{signal:controller.signal});if(!response.ok)throw Error("HTTP "+response.status);const data=await response.json();if(id!==searchToken)return;if(data.error)throw Error(data.reason||"Search failed");const results=(data.results||[]).filter(r=>r.country_code==="US"&&validCoordinates([r.latitude,r.longitude]));el("searchInfo").textContent=results.length?"Choose a place:":"No match. Try a nearby town and state, ZIP, or coordinates.";for(const r of results){const button=document.createElement("button"),label=[r.name,r.admin1,r.admin2].filter(Boolean).join(", ");button.type="button";button.textContent=label;button.style.textAlign="left";button.onclick=()=>{if(id!==searchToken)return;searchToken++;el("searchResults").replaceChildren();el("searchInfo").textContent="Selected: "+label;closePanel();goLocation([r.latitude,r.longitude],label);};el("searchResults").appendChild(button);}}catch(error){if(id===searchToken)el("searchInfo").textContent=error.name==="AbortError"?"Search timed out. Try again or enter coordinates.":"Search unavailable: "+error.message;}finally{clearTimeout(timeout);if(id===searchToken){el("searchButton").disabled=false;searchController=null;}}}
 /* Live GPS: the beacon moves independently of the stand. */
@@ -615,7 +630,18 @@ el("windHeight").onchange=()=>{
 el("speed").oninput=()=>{manualWind();refresh();};el("gustSpeed").oninput=()=>{manualWind();refresh();};el("spread").onchange=refresh;
 el("density").oninput=e=>el("densityText").textContent=e.target.value;
 el("motion").oninput=e=>el("motionText").textContent=e.target.value+"×";
-el("eddies").onchange=()=>{scheduleBuild();status(el("eddies").value==="on"?"Terrain airflow enabled":"Straight-line wind selected");};
+function updateSimulationUI(){
+ const terrain=el("eddies").value==="on";
+ el("simulationMode").value=terrain?"terrain":"straight";
+ el("animate").textContent=animation?"Pause simulation":"Resume simulation";
+ el("animate").setAttribute("aria-pressed",String(animation));
+ el("simulationInfo").textContent=!animation?"Simulation paused.":terrain?(mode==="3d"?"Running · experimental terrain airflow at the selected height.":"Running · straight wind in 2D. Enable 3D for terrain airflow."):"Running · straight wind at the selected height.";
+}
+el("simulationMode").onchange=()=>{
+ el("eddies").value=el("simulationMode").value==="terrain"?"on":"off";
+ animation=true;updateSimulationUI();scheduleBuild();resetParticles();
+};
+el("eddies").onchange=()=>{updateSimulationUI();scheduleBuild();status(el("eddies").value==="on"?"Terrain airflow enabled":"Straight-line wind selected");};
 el("eddyStrength").oninput=e=>{el("eddyText").textContent=e.target.value+"%";scheduleBuild();};
 el("resetWind").onclick=()=>{manualWind();bearing=315;el("speed").max=30;el("gustSpeed").max=45;el("windHeight").value="5";updateWindHeightInfo();el("speed").value=8;el("gustSpeed").value=12;el("spread").value=17;el("density").value=250;el("motion").value=3;el("densityText").textContent="250";el("motionText").textContent="3×";el("eddies").value="on";el("eddyStrength").value=65;el("eddyText").textContent="65%";refresh();scheduleBuild();};
 el("standToggle").onclick=()=>{const h=el("standList").classList.toggle("hidden");el("standToggle").textContent=h?"📍 Stand ▸":"📍 Stand ▾";};
@@ -632,7 +658,9 @@ el("height").oninput=e=>{exaggeration=+e.target.value;el("heightText").textConte
 el("shade").oninput=e=>{el("shadeText").textContent=e.target.value+"%";applyView();};
 el("left").onclick=()=>{if(ready)map.rotateTo(map.getBearing()-30,{duration:300});};el("right").onclick=()=>{if(ready)map.rotateTo(map.getBearing()+30,{duration:300});};
 el("zoomIn").onclick=()=>{if(ready)map.zoomIn();};el("zoomOut").onclick=()=>{if(ready)map.zoomOut();};
-el("animate").onclick=()=>{animation=!animation;el("animate").textContent="Animation: "+(animation?"on":"off");};
+el("animate").onclick=()=>{animation=!animation;updateSimulationUI();};
+updateSimulationUI();
+el("resetWind").addEventListener("click",updateSimulationUI);
 root.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>showTab(b.dataset.tab));el("close").onclick=closePanel;el("open").onclick=()=>showTab("wind");el("bearingButton").onclick=()=>{if(el("panel").classList.contains("hidden"))showTab("wind");else closePanel();};
 let pointer=null;
 function turnCompass(e){const r=el("wheel").getBoundingClientRect();setBearing(Math.atan2(e.clientX-r.left-r.width/2,-(e.clientY-r.top-r.height/2))*180/Math.PI);}
