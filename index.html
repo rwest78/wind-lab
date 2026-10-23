@@ -37,7 +37,7 @@
 <canvas id="a77canvas" class="wind"></canvas>
 
 <div class="ui">
-<div id="a77status" class="status">Starting V7.7…</div>
+<div id="a77status" class="status">Starting Wind Lab…</div>
 
 <div id="a77compass" class="compass">
 <div id="a77move" class="move">↔ MOVE</div>
@@ -148,18 +148,18 @@
 
 <div id="a77eddy" class="hidden">
 <div class="line">
-<label>Leeward eddies
+<label>Terrain airflow
 <select id="a77eddies">
 <option value="on" selected>On — experimental</option>
 <option value="off">Off — straight wind</option>
 </select></label>
 </div>
 <div class="line">
-<label>Eddy strength <b id="a77eddyText">65%</b>
+<label>Terrain effect strength <b id="a77eddyText">65%</b>
 <input id="a77eddyStrength" type="range" min="0" max="100" step="5" value="65"></label>
 </div>
-<div id="a77eddyInfo" class="note">Enable 3D to find potential leeward eddy zones.</div>
-<div class="note">Experimental terrain-based visualization, not measured airflow. Colors are for visibility. The yellow scent cone follows prevailing wind, not the eddies.</div>
+<div id="a77eddyInfo" class="note">Enable 3D for windward lift, crest disturbance, and leeward eddies.</div>
+<div class="note">Experimental visual estimates from terrain. Particle lift and disturbance are illustrative, not measured turbulence. Colors are for visibility. The yellow cone follows prevailing wind.</div>
 </div>
 
 <div id="a77more" class="hidden">
@@ -177,7 +177,7 @@
 </select></label>
 </div>
 <div id="a77accuracy" class="note">GPS not requested</div>
-<div class="note">V7.7 + experimental eddies. Elevation is regional DEM data, not LiDAR. Green, yellow, and red are visibility colors, not airflow diagnostics.</div>
+<div class="note">V7.7 + experimental hill airflow. Elevation is regional DEM data, not LiDAR. Green, yellow, and red are visibility colors, not airflow diagnostics.</div>
 </div>
 </div>
 </div>
@@ -322,15 +322,19 @@ async function start2D(){
    map.remove();
    map=null;
   }
+
   el("map").innerHTML="";
   map=L.map(el("map"),{zoomControl:false}).setView(HOME,15);
+
   L.tileLayer(SAT+"{z}/{y}/{x}",{
    maxZoom:19,attribution:"© Esri"
   }).addTo(map);
+
   plume=L.polygon(fanCoordinates(),{
    color:"#ffe132",weight:3,fillColor:"#ffe132",
    fillOpacity:.32,interactive:false
   }).addTo(map);
+
   circle(NORTH,"#ef4444",7);
   circle(SOUTH,"#fb923c",7);
 
@@ -339,18 +343,22 @@ async function start2D(){
    html:'<div style="width:23px;height:23px;border-radius:50%;background:#ffdc20;border:3px solid white;box-shadow:0 0 7px #111"></div>',
    iconSize:[23,23],iconAnchor:[11,11]
   });
+
   standMarker=L.marker(stand,{icon,draggable:dragging}).addTo(map);
   standMarker.on("drag",e=>{
    const p=e.target.getLatLng();
    stand=[p.lat,p.lng];
    refresh();
   });
+
   if(gps)gpsMarker=circle(gps,"#3b82f6",8);
+
   map.on("click",e=>{
    if(!placing)return;
    placing=false;
    setStand([e.latlng.lat,e.latlng.lng]);
   });
+
   mode="2d";
   refresh();
   status("V7.7 · 2D satellite ready");
@@ -410,12 +418,10 @@ function sample(x,y){
  if(!heights)return 0;
  x=Math.max(0,Math.min(gridW-1,x));
  y=Math.max(0,Math.min(gridH-1,y));
- const x0=Math.floor(x);
- const y0=Math.floor(y);
+ const x0=Math.floor(x),y0=Math.floor(y);
  const x1=Math.min(gridW-1,x0+1);
  const y1=Math.min(gridH-1,y0+1);
- const a=x-x0;
- const b=y-y0;
+ const a=x-x0,b=y-y0;
  return (
   heights[y0*gridW+x0]*(1-a)*(1-b)+
   heights[y0*gridW+x1]*a*(1-b)+
@@ -480,6 +486,7 @@ function updateMarkers(){
   [stand,0xffdc20,1.35]
  ];
  if(gps)points.push([gps,0x3b82f6,1]);
+
  for(const [p,color,size] of points){
   const q=worldPoint(p);
   if(!q.inside)continue;
@@ -511,10 +518,8 @@ function updateFan(){
  if(!worldPoint(stand).inside)return;
 
  const f=fanSettings();
- const angular=64;
- const radial=32;
- const vertices=[];
- const indices=[];
+ const angular=64,radial=32;
+ const vertices=[],indices=[];
  const lift=Math.max(1.5,worldW/3500);
 
  function point(a,r){
@@ -530,15 +535,16 @@ function updateFan(){
  }
  for(let r=0;r<radial;r++){
   for(let a=0;a<angular;a++){
-   const i=r*(angular+1)+a;
-   const j=i+angular+1;
+   const i=r*(angular+1)+a,j=i+angular+1;
    indices.push(i,j,i+1,i+1,j,j+1);
   }
  }
+
  const g=new T.BufferGeometry();
  g.setAttribute("position",new T.Float32BufferAttribute(vertices,3));
  g.setIndex(indices);
  g.computeVertexNormals();
+
  fanMesh=new T.Mesh(g,new T.MeshBasicMaterial({
   color:0xffe132,transparent:true,opacity:.34,
   depthWrite:false,side:T.DoubleSide
@@ -554,6 +560,7 @@ function updateFan(){
  for(let r=0;r<=radial;r++)edge.push(ep(0,r/radial));
  for(let a=1;a<=angular;a++)edge.push(ep(a/angular,1));
  for(let r=radial-1;r>=0;r--)edge.push(ep(1,r/radial));
+
  fanLine=new T.Line(
   new T.BufferGeometry().setFromPoints(edge),
   new T.LineBasicMaterial({
@@ -576,6 +583,7 @@ function buildShade(){
   shadeMaterial.dispose();
   shadeMesh=null;
  }
+
  const nx=geometry.parameters.widthSegments;
  const ny=geometry.parameters.heightSegments;
  const cv=document.createElement("canvas");
@@ -587,8 +595,7 @@ function buildShade(){
 
  for(let y=0;y<=ny;y++){
   for(let x=0;x<=nx;x++){
-   const px=x/nx*(gridW-1);
-   const py=y/ny*(gridH-1);
+   const px=x/nx*(gridW-1),py=y/ny*(gridH-1);
    const hx=(sample(px+1,py)-sample(px-1,py))*exaggeration/
     Math.max(1,2*worldW/(gridW-1));
    const hz=(sample(px,py+1)-sample(px,py-1))*exaggeration/
@@ -602,9 +609,11 @@ function buildShade(){
    img.data[k+3]=shade;
   }
  }
+
  c.putImageData(img,0,0);
  const tex=new T.CanvasTexture(cv);
  tex.colorSpace=T.SRGBColorSpace;
+
  shadeMaterial=new T.MeshBasicMaterial({
   map:tex,transparent:true,opacity:+el("shade").value/100,
   depthWrite:false,polygonOffset:true,
@@ -616,21 +625,17 @@ function buildShade(){
  applyView();
 }
 
-/* RELIEF / SATELLITE TOGGLE */
-
 function applyView(){
  if(!mesh)return;
- const showSatellite=preferredView==="satellite"&&
-  imageryReady&&!!satelliteMaterial;
- mesh.material=showSatellite?satelliteMaterial:reliefMaterial;
+ const sat=preferredView==="satellite"&&imageryReady&&!!satelliteMaterial;
+ mesh.material=sat?satelliteMaterial:reliefMaterial;
  mesh.material.needsUpdate=true;
- if(shadeMesh){
-  shadeMesh.visible=showSatellite&&+el("shade").value>0;
- }
+ if(shadeMesh)shadeMesh.visible=sat&&+el("shade").value>0;
+
  el("terrainInfo").textContent=
   "Elevation "+Math.round(low*3.28084)+"–"+
   Math.round(high*3.28084)+" ft · "+exaggeration+"× · "+
-  (showSatellite?"Satellite + hillshade":
+  (sat?"Satellite + hillshade":
    preferredView==="satellite"?
    "Satellite loading · relief temporary":"Relief view");
 }
@@ -649,19 +654,19 @@ function setView(view){
  }
 }
 
-/* TERRAIN GEOMETRY */
-
 function updateTerrain(){
  if(!geometry||!heights)return;
  const p=geometry.attributes.position;
  const nx=geometry.parameters.widthSegments;
  const ny=geometry.parameters.heightSegments;
+
  for(let y=0;y<=ny;y++){
   for(let x=0;x<=nx;x++){
-   const elevation=sample(x/nx*(gridW-1),y/ny*(gridH-1));
-   p.setY(y*(nx+1)+x,(elevation-(low+high)/2)*exaggeration);
+   const h=sample(x/nx*(gridW-1),y/ny*(gridH-1));
+   p.setY(y*(nx+1)+x,(h-(low+high)/2)*exaggeration);
   }
  }
+
  p.needsUpdate=true;
  geometry.computeVertexNormals();
  updateMarkers();
@@ -691,11 +696,12 @@ function terrainHit(e){
  return hits.length?hits[0].point:null;
 }
 
-/* EXPERIMENTAL LEEWARD EDDIES */
+/* EXPERIMENTAL TERRAIN AIRFLOW */
 
 let eddyCenters=[];
 let flowGrid=null;
 const FLOW_N=81;
+let windClock=0;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
 function rawGround(x,z){
@@ -705,23 +711,56 @@ function rawGround(x,z){
  );
 }
 
+function ridgeFeatures(x,z){
+ const b=windVector();
+ const step=clamp(Math.min(worldW,worldD)/75,18,65);
+ const far=step*3;
+ const h=rawGround(x,z);
+ const up=rawGround(x-b.dx*step,z-b.dz*step);
+ const down=rawGround(x+b.dx*step,z+b.dz*step);
+ const farUp=rawGround(x-b.dx*far,z-b.dz*far);
+ const farDown=rawGround(x+b.dx*far,z+b.dz*far);
+ const cx=-b.dz,cz=b.dx;
+ const left=rawGround(x-cx*step,z-cz*step);
+ const right=rawGround(x+cx*step,z+cz*step);
+ const user=+el("eddyStrength").value/100;
+
+ if(
+  !insideTerrain(x-b.dx*far,z-b.dz*far)||
+  !insideTerrain(x+b.dx*far,z+b.dz*far)||
+  !insideTerrain(x-cx*step,z-cz*step)||
+  !insideTerrain(x+cx*step,z+cz*step)
+ ){
+  return {rise:0,crest:0,lee:0,cross:0};
+ }
+
+ return {
+  rise:clamp(Math.max(0,(down-up)/(2*step))*5,0,1)*user,
+  crest:clamp(Math.max(0,h-(farUp+farDown)/2)/12,0,1)*user,
+  lee:clamp(Math.max(0,farUp-h)/25,0,1)*user,
+  cross:clamp((right-left)/(2*step)*4,-1,1)*user
+ };
+}
+
 function updateEddyInfo(){
  if(!heights||mode!=="3d"){
   el("eddyInfo").textContent=
-   "Enable 3D to find potential leeward eddy zones.";
- }else if(el("eddies").value!=="on"||
-          +el("eddyStrength").value===0){
+   "Enable 3D for windward lift, crest disturbance, and leeward eddies.";
+ }else if(el("eddies").value!=="on"||+el("eddyStrength").value===0){
   el("eddyInfo").textContent=
-   "Eddies off · original straight-line wind active.";
+   "Terrain effects off · original straight-line wind active.";
  }else{
-  el("eddyInfo").textContent=eddyCenters.length+
-   " potential leeward zones · experimental estimates.";
+  el("eddyInfo").textContent=
+   "Windward lift + crest disturbance + "+
+   eddyCenters.length+
+   " potential leeward zones · experimental.";
  }
 }
 
 function buildEddies(){
  eddyCenters=[];
  flowGrid=null;
+
  if(!heights||mode!=="3d"||el("eddies").value!=="on"){
   updateEddyInfo();
   reset3DParticles();
@@ -752,8 +791,7 @@ function buildEddies(){
 
    if(score<7)continue;
 
-   const cx=-b.dz;
-   const cz=b.dx;
+   const cx=-b.dz,cz=b.dx;
    const cross=
     rawGround(x+cx*far,z+cz*far)-
     rawGround(x-cx*far,z-cz*far);
@@ -763,8 +801,7 @@ function buildEddies(){
     side:cross>=0?1:-1,
     radius:clamp(
      spacing*(1.25+score/30),
-     spacing*1.1,
-     spacing*3
+     spacing*1.1,spacing*3
     ),
     strength:clamp(score/25,.2,1)
    });
@@ -788,9 +825,13 @@ function buildEddies(){
 
 function eddyVector(x,z){
  const b=windVector();
+ const f=ridgeFeatures(x,z);
+ const turn=-f.cross*.6;
+ const speedup=1+f.rise*.2+f.crest*.3-f.lee*.28;
+ const c=Math.cos(turn),s=Math.sin(turn);
+ let vx=(b.dx*c-b.dz*s)*speedup;
+ let vz=(b.dx*s+b.dz*c)*speedup;
  const user=+el("eddyStrength").value/100;
- let vx=b.dx;
- let vz=b.dz;
 
  for(const e of eddyCenters){
   const rx=(x-e.x)/e.radius;
@@ -804,7 +845,6 @@ function eddyVector(x,z){
 
   vx*=1-local*.9;
   vz*=1-local*.9;
-
   vx+=-rz*e.side*swirl-rx*local*.12;
   vz+= rx*e.side*swirl-rz*local*.12;
  }
@@ -814,29 +854,34 @@ function eddyVector(x,z){
   vx*=2.2/magnitude;
   vz*=2.2/magnitude;
  }
- return {vx,vz};
+
+ return {vx,vz,rise:f.rise,crest:f.crest,lee:f.lee};
 }
 
-/* Cache the field so terrain calculations do not run per particle. */
+/* Cache terrain features and the main flow field. */
 
 function buildFlowGrid(){
  flowGrid=null;
+
  if(
   heights&&mode==="3d"&&
   el("eddies").value==="on"&&
-  +el("eddyStrength").value>0&&
-  eddyCenters.length
+  +el("eddyStrength").value>0
  ){
-  flowGrid=new Float32Array(FLOW_N*FLOW_N*2);
+  flowGrid=new Float32Array(FLOW_N*FLOW_N*5);
+
   for(let j=0;j<FLOW_N;j++){
    for(let i=0;i<FLOW_N;i++){
     const f=eddyVector(
      (i/(FLOW_N-1)-.5)*worldW,
      (j/(FLOW_N-1)-.5)*worldD
     );
-    const k=(j*FLOW_N+i)*2;
+    const k=(j*FLOW_N+i)*5;
     flowGrid[k]=f.vx;
     flowGrid[k+1]=f.vz;
+    flowGrid[k+2]=f.rise;
+    flowGrid[k+3]=f.crest;
+    flowGrid[k+4]=f.lee;
    }
   }
  }
@@ -844,27 +889,21 @@ function buildFlowGrid(){
 }
 
 function flowAt(x,z){
+ const base=windVector();
  if(!flowGrid){
-  const b=windVector();
-  return {vx:b.dx,vz:b.dz};
+  return {vx:base.dx,vz:base.dz,rise:0,crest:0,lee:0};
  }
 
- const gx=clamp(
-  (x/worldW+.5)*(FLOW_N-1),0,FLOW_N-1
- );
- const gz=clamp(
-  (z/worldD+.5)*(FLOW_N-1),0,FLOW_N-1
- );
- const ix=Math.floor(gx);
- const iz=Math.floor(gz);
+ const gx=clamp((x/worldW+.5)*(FLOW_N-1),0,FLOW_N-1);
+ const gz=clamp((z/worldD+.5)*(FLOW_N-1),0,FLOW_N-1);
+ const ix=Math.floor(gx),iz=Math.floor(gz);
  const jx=Math.min(ix+1,FLOW_N-1);
  const jz=Math.min(iz+1,FLOW_N-1);
- const a=gx-ix;
- const b=gz-iz;
- const k00=(iz*FLOW_N+ix)*2;
- const k10=(iz*FLOW_N+jx)*2;
- const k01=(jz*FLOW_N+ix)*2;
- const k11=(jz*FLOW_N+jx)*2;
+ const a=gx-ix,b=gz-iz;
+ const k00=(iz*FLOW_N+ix)*5;
+ const k10=(iz*FLOW_N+jx)*5;
+ const k01=(jz*FLOW_N+ix)*5;
+ const k11=(jz*FLOW_N+jx)*5;
 
  const blend=c=>
   flowGrid[k00+c]*(1-a)*(1-b)+
@@ -872,7 +911,21 @@ function flowAt(x,z){
   flowGrid[k01+c]*(1-a)*b+
   flowGrid[k11+c]*a*b;
 
- return {vx:blend(0),vz:blend(1)};
+ const rise=blend(2),crest=blend(3),lee=blend(4);
+ const rough=rise*.07+crest*.25+lee*.45;
+ const wave=
+  Math.sin(x/75+z/110-windClock*.9)*
+  Math.cos(z/90-x/140+windClock*.6);
+ const pulse=Math.sin(x/125-z/95+windClock*.7);
+
+ const vx=
+  blend(0)-base.dz*rough*wave+
+  base.dx*rough*pulse*.15;
+ const vz=
+  blend(1)+base.dx*rough*wave+
+  base.dz*rough*pulse*.15;
+
+ return {vx,vz,rise,crest,lee};
 }
 
 /* WIND PARTICLES */
@@ -897,12 +950,14 @@ function canvasSize(){
  const ratio=Math.min(window.devicePixelRatio||1,2);
  const cw=Math.round(width*ratio);
  const ch=Math.round(height*ratio);
+
  if(canvas.width!==cw||canvas.height!==ch){
   canvas.width=cw;
   canvas.height=ch;
   canvas.style.width=width+"px";
   canvas.style.height=height+"px";
  }
+
  ctx.setTransform(ratio,0,0,ratio,0,0);
  return {width,height};
 }
@@ -945,18 +1000,19 @@ function drawStreak(x,y,dx,dy,length,colors){
 
 function draw2DWind(dt,s,speed,motion,count,colors){
  const a=norm(bearing+180)*Math.PI/180;
- const dx=Math.sin(a);
- const dy=-Math.cos(a);
+ const dx=Math.sin(a),dy=-Math.cos(a);
  const length=6+Math.min(4,speed/7.5);
 
  for(let i=0;i<count;i++){
   const p=particles[i];
   p.x+=dx*speed*dt*motion*p.factor/35;
   p.y+=dy*speed*dt*motion*p.factor/35;
+
   if(p.x>1.03)p.x=-.03;
   if(p.x<-.03)p.x=1.03;
   if(p.y>1.03)p.y=-.03;
   if(p.y<-.03)p.y=1.03;
+
   drawStreak(
    p.x*s.width,p.y*s.height,
    dx,dy,length,windColors(i)
@@ -974,10 +1030,29 @@ function windVector(){
 function projectTerrain(x,z,s){
  if(!insideTerrain(x,z))return null;
  const lift=Math.max(1.8,worldW/2800);
- const v=new T.Vector3(x,ground(x,z)+lift,z);
+ let airLift=0;
+
+ if(flowGrid){
+  const f=flowAt(x,z);
+  const wave=Math.sin(x/85-z/115+windClock*.85);
+  const speedFactor=clamp(+el("speed").value/8,0,1.5);
+
+  /* Illustrative lift above terrain, not solved vertical velocity. */
+  airLift=(
+   f.rise*9+
+   f.crest*(10+wave*4)+
+   f.lee*(8+wave*6)
+  )*exaggeration*speedFactor;
+ }
+
+ const v=new T.Vector3(x,ground(x,z)+lift+airLift,z);
  v.project(camera);
- if(!Number.isFinite(v.x)||!Number.isFinite(v.y)||
-    !Number.isFinite(v.z)||v.z< -1||v.z>1)return null;
+
+ if(
+  !Number.isFinite(v.x)||!Number.isFinite(v.y)||
+  !Number.isFinite(v.z)||v.z< -1||v.z>1
+ )return null;
+
  return {
   x:(v.x+1)*s.width*.5,
   y:(1-v.y)*s.height*.5,
@@ -992,9 +1067,10 @@ function terrainFromScreen(sx,sy,s){
  ray.setFromCamera(mouse,camera);
  const origin=ray.ray.origin;
  const dir=ray.ray.direction;
+
  if(Math.abs(dir.y)<.00001)return null;
- let elevation=0;
- let x=0,z=0;
+ let elevation=0,x=0,z=0;
+
  for(let i=0;i<6;i++){
   const t=(elevation-origin.y)/dir.y;
   if(t<=0)return null;
@@ -1015,8 +1091,12 @@ function spawn3DParticle(p,s){
   if(!q)continue;
   const check=projectTerrain(q.x,q.z,s);
   if(!check)continue;
-  if(check.x<0||check.x>s.width||
-     check.y<0||check.y>s.height)continue;
+
+  if(
+   check.x<0||check.x>s.width||
+   check.y<0||check.y>s.height
+  )continue;
+
   p.wx=q.x;
   p.wz=q.z;
   p.valid=true;
@@ -1038,8 +1118,7 @@ function pixelScale(x,z,dx,dz,s){
 function draw3DTerrainStreak(x,z,dx,dz,lengthMeters,s,colors){
  const pieces=5;
  const pts=[];
- let px=x;
- let pz=z;
+ let px=x,pz=z;
 
  for(let j=0;j<=pieces;j++){
   const q=projectTerrain(px,pz,s);
@@ -1060,6 +1139,7 @@ function draw3DTerrainStreak(x,z,dx,dz,lengthMeters,s,colors){
 
  ctx.lineCap="round";
  ctx.lineJoin="round";
+
  for(let pass=0;pass<2;pass++){
   ctx.beginPath();
   for(let j=0;j<pts.length;j++){
@@ -1087,14 +1167,15 @@ function draw3DWind(dt,s,speed,motion,count,colors){
 
   const f=flowAt(p.wx,p.wz);
   const magnitude=Math.hypot(f.vx,f.vz);
+
   if(magnitude<.015){
    spawn3DParticle(p,s);
    continue;
   }
 
-  const dx=f.vx/magnitude;
-  const dz=f.vz/magnitude;
+  const dx=f.vx/magnitude,dz=f.vz/magnitude;
   const scale=pixelScale(p.wx,p.wz,dx,dz,s);
+
   if(!scale){
    spawn3DParticle(p,s);
    continue;
@@ -1102,16 +1183,16 @@ function draw3DWind(dt,s,speed,motion,count,colors){
 
   let step=Math.min(
    Math.max(
-    0,
-    desiredPixelsPerSecond/scale.pxPerMeter*dt*p.factor
+    0,desiredPixelsPerSecond/scale.pxPerMeter*dt*p.factor
    ),
    Math.max(worldW,worldD)*.08
   );
 
   if(flowGrid){
-   const limit=Math.min(
-    ...eddyCenters.map(e=>e.radius)
-   )/12;
+   const limit=eddyCenters.length?
+    Math.min(...eddyCenters.map(e=>e.radius))/12:
+    Math.min(worldW,worldD)/100;
+
    const steps=Math.min(
     16,Math.max(1,Math.ceil(step*2.2/limit))
    );
@@ -1139,8 +1220,10 @@ function draw3DWind(dt,s,speed,motion,count,colors){
   }
 
   const head=projectTerrain(p.wx,p.wz,s);
-  if(!head||head.x< -15||head.x>s.width+15||
-     head.y< -15||head.y>s.height+15){
+  if(
+   !head||head.x< -15||head.x>s.width+15||
+   head.y< -15||head.y>s.height+15
+  ){
    spawn3DParticle(p,s);
    continue;
   }
@@ -1148,8 +1231,7 @@ function draw3DWind(dt,s,speed,motion,count,colors){
   const current=flowAt(p.wx,p.wz);
   const m=Math.hypot(current.vx,current.vz);
   if(m<.015)continue;
-  const ux=current.vx/m;
-  const uz=current.vz/m;
+  const ux=current.vx/m,uz=current.vz/m;
   const currentScale=pixelScale(p.wx,p.wz,ux,uz,s);
   if(!currentScale)continue;
 
@@ -1171,16 +1253,19 @@ function drawWind(time){
   Math.max(0,(time-lastWindTime||16)/1000),.05
  );
  lastWindTime=time;
+
  if(mode!==lastWindMode){
   if(mode==="3d")reset3DParticles();
   lastWindMode=mode;
  }
+
  if(!animation||mode==="none")return;
  const speed=+el("speed").value;
  if(speed<=0)return;
  const motion=+el("motion").value;
  const count=+el("density").value;
  const colors=windColors();
+ windClock+=dt;
 
  if(mode==="2d"){
   draw2DWind(dt,s,speed,motion,count,colors);
@@ -1200,11 +1285,8 @@ requestAnimationFrame(windLoop);
 function controls(){
  const c=renderer.domElement;
  const pointers=new Map();
- let last=null;
- let pinch=null;
- let down=null;
- let movingStand=false;
- let moved=false;
+ let last=null,pinch=null,down=null;
+ let movingStand=false,moved=false;
 
  function pd(e){
   c.setPointerCapture(e.pointerId);
@@ -1213,19 +1295,21 @@ function controls(){
   last=null;
   pinch=null;
   moved=false;
+
   if(dragging&&!placing&&pointers.size===1){
    const p=terrainHit(e);
    const q=worldPoint(stand);
-   movingStand=!!p&&
-    Math.hypot(p.x-q.x,p.z-q.z)<worldW/55;
+   movingStand=!!p&&Math.hypot(p.x-q.x,p.z-q.z)<worldW/55;
   }
  }
 
  function pm(e){
   if(!pointers.has(e.pointerId))return;
+
   if(down&&Math.hypot(e.clientX-down.x,e.clientY-down.y)>8){
    moved=true;
   }
+
   pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
   const ps=[...pointers.values()];
 
@@ -1242,10 +1326,7 @@ function controls(){
    }
    last={...ps[0]};
   }else if(ps.length===2){
-   const d=Math.hypot(
-    ps[0].x-ps[1].x,
-    ps[0].y-ps[1].y
-   );
+   const d=Math.hypot(ps[0].x-ps[1].x,ps[0].y-ps[1].y);
    if(pinch)distance*=pinch/d;
    pinch=d;
    last=null;
@@ -1299,8 +1380,7 @@ function render3D(){
 
 async function loadElevation(id){
  const c=config();
- const width=c.nx*256;
- const height=c.ny*256;
+ const width=c.nx*256,height=c.ny*256;
  const cv=document.createElement("canvas");
  cv.width=width;
  cv.height=height;
@@ -1321,11 +1401,9 @@ async function loadElevation(id){
 
  await Promise.all(jobs);
  if(id!==token)return null;
-
  const pixels=context.getImageData(0,0,width,height).data;
  const arr=new Float32Array(width*height);
- let min=Infinity;
- let max=-Infinity;
+ let min=Infinity,max=-Infinity;
 
  for(let i=0;i<arr.length;i++){
   const k=i*4;
@@ -1341,8 +1419,7 @@ async function loadElevation(id){
 
 async function loadImagery(id,c){
  const scale=2**(c.satZ-c.z);
- const cols=c.nx*scale;
- const rows=c.ny*scale;
+ const cols=c.nx*scale,rows=c.ny*scale;
  const total=cols*rows;
  const cv=document.createElement("canvas");
  cv.width=cols*256;
@@ -1359,8 +1436,8 @@ async function loadImagery(id,c){
  async function worker(){
   while(queue.length&&id===token){
    const p=queue.shift();
-   const x=c.x*scale+p.x;
-   const y=c.y*scale+p.y;
+   const x=c.x*scale+p.x,y=c.y*scale+p.y;
+
    try{
     const bmp=await imageBitmap(SAT+c.satZ+"/"+y+"/"+x);
     if(id!==token){
@@ -1374,9 +1451,7 @@ async function loadImagery(id,c){
   }
  }
 
- await Promise.all(
-  Array.from({length:Math.min(8,total)},worker)
- );
+ await Promise.all(Array.from({length:Math.min(8,total)},worker));
  if(id!==token||!loaded)return null;
  return {cv,loaded,total};
 }
@@ -1391,7 +1466,7 @@ async function start3D(){
  if(busy)return;
  busy=true;
  const id=++token;
- status("Loading V7.7 elevation…");
+ status("Loading terrain elevation…");
 
  try{
   if(!window.THREE){
@@ -1405,6 +1480,7 @@ async function start3D(){
 
   const data=await loadElevation(id);
   if(!data||id!==token)return;
+
   cfg=data.c;
   gridW=data.width;
   gridH=data.height;
@@ -1446,6 +1522,7 @@ async function start3D(){
   reliefMaterial=new T.MeshStandardMaterial({
    color:0xaac8a0,roughness:1,side:T.DoubleSide
   });
+
   geometry=new T.PlaneGeometry(
    worldW,worldD,
    Math.min(gridW-1,256),Math.min(gridH-1,256)
@@ -1472,8 +1549,7 @@ async function start3D(){
 
   resizeObserver=new ResizeObserver(()=>{
    if(!renderer||!camera||!host)return;
-   const width=host.clientWidth;
-   const height=host.clientHeight;
+   const width=host.clientWidth,height=host.clientHeight;
    if(!width||!height)return;
    camera.aspect=width/height;
    camera.updateProjectionMatrix();
@@ -1491,7 +1567,7 @@ async function start3D(){
   buildEddies();
   reset3DParticles();
   render3D();
-  status("V7.7 terrain ready · loading satellite…");
+  status("Terrain ready · loading satellite…");
 
   const imagery=await loadImagery(id,cfg);
   if(id!==token||mode!=="3d")return;
@@ -1503,14 +1579,16 @@ async function start3D(){
     8,renderer.capabilities.getMaxAnisotropy()
    );
    texture.needsUpdate=true;
+
    satelliteMaterial=new T.MeshStandardMaterial({
     map:texture,roughness:1,side:T.DoubleSide
    });
    satelliteMaterial.needsUpdate=true;
    imageryReady=true;
    applyView();
+
    status(
-    "V7.7 3D ready · "+imagery.loaded+"/"+imagery.total+
+    "Hill airflow ready · "+imagery.loaded+"/"+imagery.total+
     " satellite tiles"
    );
   }else{
@@ -1544,6 +1622,7 @@ function cleanup3D(){
   resizeObserver.disconnect();
   resizeObserver=null;
  }
+
  if(scene){
   clearFan();
   clearGroup(markerGroup);
@@ -1554,6 +1633,7 @@ function cleanup3D(){
    shadeMaterial.dispose();
   }
  }
+
  if(geometry)geometry.dispose();
  if(reliefMaterial)reliefMaterial.dispose();
  if(satelliteMaterial){
@@ -1597,6 +1677,7 @@ function back2D(){
 
 function centerOn(p,zoom){
  if(mode==="2d"&&map)map.setView(p,zoom);
+
  if(mode==="3d"&&cfg){
   const q=worldPoint(p);
   if(!q.inside){
@@ -1617,10 +1698,12 @@ function requestGPS(move){
   return;
  }
  status("Requesting GPS…");
+
  navigator.geolocation.getCurrentPosition(
   pos=>{
    gps=[pos.coords.latitude,pos.coords.longitude];
-   el("accuracy").textContent="GPS accuracy approximately "+
+   el("accuracy").textContent=
+    "GPS accuracy approximately "+
     Math.round(pos.coords.accuracy*3.28084)+" feet";
 
    if(mode==="2d"&&map){
@@ -1662,7 +1745,7 @@ el("eddies").onchange=()=>{
  buildEddies();
  status(
   el("eddies").value==="on"?
-  "Experimental eddies enabled in 3D":
+  "Experimental hill airflow enabled in 3D":
   "Straight-line wind restored"
  );
 };
@@ -1808,7 +1891,8 @@ function wireCompass(target,type){
   e.stopPropagation();
   pointer={
    id:e.pointerId,type,x:e.clientX,y:e.clientY,
-   left:el("compass").offsetLeft,top:el("compass").offsetTop
+   left:el("compass").offsetLeft,
+   top:el("compass").offsetTop
   };
   target.setPointerCapture(e.pointerId);
   if(type==="turn")turnCompass(e);
@@ -1817,6 +1901,7 @@ function wireCompass(target,type){
  target.addEventListener("pointermove",e=>{
   if(!pointer||pointer.id!==e.pointerId)return;
   e.preventDefault();
+
   if(pointer.type==="move"){
    const x=pointer.left+e.clientX-pointer.x;
    const y=pointer.top+e.clientY-pointer.y;
