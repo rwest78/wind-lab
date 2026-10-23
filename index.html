@@ -110,6 +110,7 @@ html,body{margin:0;height:100%;overflow:hidden}
 <button data-tab="gust">Gusts</button>
 <button data-tab="terrain">3D</button>
 <button data-tab="eddy">Eddies</button>
+<button data-tab="thermals">Thermals</button>
 <button data-tab="weather">Weather</button>
 <button data-tab="overlays">Overlays</button>
 <button data-tab="more">More</button>
@@ -208,6 +209,26 @@ html,body{margin:0;height:100%;overflow:hidden}
 <input id="a77eddyStrength" type="range" min="0" max="100" step="5" value="65"></label></div>
 <div id="a77eddyInfo" class="note">Enable 3D to find potential leeward eddy zones.</div>
 <div class="note">Windward speed-up, crest disturbance, and leeward eddies are experimental visual estimates. The 5 ft and 20 ft layers use the same horizontal flow estimate. Distant airflow uses coarser terrain estimates. Colors are for visibility. The yellow cone follows prevailing wind.</div>
+</div>
+<div id="a77thermals" class="hidden">
+<div class="line"><label>Thermal airflow
+<select id="a77thermalMode"><option value="off" selected>Off — existing wind</option><option value="only">Thermals only</option><option value="combined">Wind + thermals</option></select></label></div>
+<div class="line"><label>Time preview <b id="a77thermalTimeText"></b>
+<input id="a77thermalTime" type="range" min="-12" max="12" step=".5" value="0"></label><button id="a77thermalNow">Now</button></div>
+<div class="line"><label>Cloud cover source
+<select id="a77thermalCloudSource"><option value="manual" selected>Manual assumption</option><option value="weather">Current weather preview, if available</option></select></label></div>
+<div class="line"><label>Cloud cover <b id="a77thermalCloudText">25%</b>
+<input id="a77thermalCloud" type="range" min="0" max="100" step="5" value="25"></label></div>
+<div id="a77thermalCloudNote" class="note"></div>
+<div class="line"><label>Ground cover assumption for this view
+<select id="a77thermalCover"><option value="1">Open / clear-cut</option><option value=".55" selected>Mixed cover</option><option value=".25">Dense tree cover</option></select></label></div>
+<div class="line"><label>Thermal effect strength <b id="a77thermalStrengthText">65%</b>
+<input id="a77thermalStrength" type="range" min="0" max="100" step="5" value="65"></label></div>
+<div class="line"><button id="a77thermal3D">Enable 3D</button></div>
+<div id="a77thermalInfo" class="note" aria-live="polite"></div>
+<div class="note">Estimated thermal flow · solar position + slope + sampled terrain shadows. Strength, cloud/cover response and 15-minute heating lag are uncalibrated assumptions. Preview keeps the selected wind and cloud assumptions; it does not load future weather.</div>
+<div class="note">Requires 3D terrain and zoom 11+. Both 5 ft and 20 ft use the same horizontal estimate. No solved vertical lift, valley inversion, or canopy profile. Particle speed is animation-scaled. In thermals-only mode the prevailing-wind cone is hidden.</div>
+<div class="note">Methods: <a href="https://gml.noaa.gov/grad/solcalc/solareqns.PDF" target="_blank" rel="noopener" style="color:#b9e8c6">NOAA solar geometry</a> · <a href="https://www.nwcg.gov/publications/pms425-1/7-convective-winds" target="_blank" rel="noopener" style="color:#b9e8c6">NWCG slope winds</a>. Local accuracy has not been field validated.</div>
 </div>
 <div id="a77weather" class="hidden">
 <div id="a77weatherLocation" class="note"></div>
@@ -338,8 +359,8 @@ function updateWindHeightInfo(){
 
 function features(x,z){const b=baseWind(),step=clamp(field.span/75,18,65),far=step*3,user=+el("eddyStrength").value/100,cx=-b.dz,cz=b.dx;if(!inside(x-b.dx*far,z-b.dz*far)||!inside(x+b.dx*far,z+b.dz*far)||!inside(x-cx*step,z-cz*step)||!inside(x+cx*step,z+cz*step))return {rise:0,crest:0,lee:0,cross:0};const h=ground(x,z),up=ground(x-b.dx*step,z-b.dz*step),down=ground(x+b.dx*step,z+b.dz*step),farUp=ground(x-b.dx*far,z-b.dz*far),farDown=ground(x+b.dx*far,z+b.dz*far),left=ground(x-cx*step,z-cz*step),right=ground(x+cx*step,z+cz*step);return {rise:clamp(Math.max(0,(down-up)/(2*step))*5,0,1)*user,crest:clamp(Math.max(0,h-(farUp+farDown)/2)/12,0,1)*user,lee:clamp(Math.max(0,farUp-h)/25,0,1)*user,cross:clamp((right-left)/(2*step)*4,-1,1)*user};}
 function eddyVector(x,z){const b=baseWind(),f=features(x,z),turn=-f.cross*.6,speedup=1+f.rise*.2+f.crest*.3-f.lee*.28,c=Math.cos(turn),s=Math.sin(turn);let vx=(b.dx*c-b.dz*s)*speedup,vz=(b.dx*s+b.dz*c)*speedup;const user=+el("eddyStrength").value/100;for(const e of eddyCenters){const rx=(x-e.x)/e.radius,rz=(z-e.z)/e.radius,q2=rx*rx+rz*rz;if(q2>=2.56)continue;const power=user*e.strength,local=power*Math.exp(-2.2*q2),swirl=power*3.6*Math.exp(-1.7*q2);vx*=1-local*.9;vz*=1-local*.9;vx+=-rz*e.side*swirl-rx*local*.12;vz+=rx*e.side*swirl-rz*local*.12;}const m=Math.hypot(vx,vz);if(m>2.2){vx*=2.2/m;vz*=2.2/m;}return {vx,vz,rise:f.rise,crest:f.crest,lee:f.lee};}
-function updateInfo(){updateWindHeightInfo();if(mode!=="3d")el("eddyInfo").textContent="Enable 3D for terrain airflow. Drag the map to explore.";else if(map.getZoom()<11)el("eddyInfo").textContent="Zoom in for local terrain airflow.";else if(!field)el("eddyInfo").textContent="Loading terrain around this view…";else if(!field.flow)el("eddyInfo").textContent="Terrain effects off · straight wind active.";else el("eddyInfo").textContent="Windward speed-up + crest disturbance + "+eddyCenters.length+" potential lee zones · experimental.";el("terrainInfo").textContent=mode==="3d"?"Continuous 3D terrain · "+exaggeration+"× · drag to move":"Continuous 2D satellite · drag to move";}
-function buildRegion(coverageSpan){if(!ready||mode!=="3d"||map.isMoving())return;if(map.getZoom()<11){field=null;updateInfo();return;}const center=map.getCenter(),mc=ML.MercatorCoordinate.fromLngLat(center),unit=mc.meterInMercatorCoordinateUnits();const metersPerPixel=40075016.686*Math.cos(center.lat*Math.PI/180)/(512*2**map.getZoom());field={cx:mc.x,cy:mc.y,unit,span:coverageSpan||clamp(Math.max(root.clientWidth,root.clientHeight)*metersPerPixel*1.7,800,30000),heights:new Float32Array(N*N),flow:null};let samples=0;for(let j=0;j<N;j++){for(let i=0;i<N;i++){const x=(i/(N-1)-.5)*field.span,z=(j/(N-1)-.5)*field.span;const p=toGeo(x,z),h=map.queryTerrainElevation(ll(p));if(Number.isFinite(h)){field.heights[j*N+i]=h/exaggeration;samples++;}}}if(samples<N*N*.5){field=null;updateInfo();return;}eddyCenters=[];if(el("eddies").value==="on"&&+el("eddyStrength").value>0){const b=baseWind(),step=clamp(field.span/75,18,65),far=step*3,spacing=Math.max(55,field.span/20),margin=far+spacing,candidates=[];for(let z=-field.span/2+margin;z<=field.span/2-margin;z+=spacing){for(let x=-field.span/2+margin;x<=field.span/2-margin;x+=spacing){const h=ground(x,z),up=ground(x-b.dx*step,z-b.dz*step),down=ground(x+b.dx*step,z+b.dz*step),farUp=ground(x-b.dx*far,z-b.dz*far),farDown=ground(x+b.dx*far,z+b.dz*far),score=Math.max(0,farUp-h)*.7+Math.max(0,up-down)*.8+Math.max(0,(farUp+farDown)/2-h)*.32+Math.max(0,(farUp-farDown)/(2*far))*75;if(score<7)continue;const cx=-b.dz,cz=b.dx,cross=ground(x+cx*far,z+cz*far)-ground(x-cx*far,z-cz*far);candidates.push({x,z,score,side:cross>=0?1:-1,radius:clamp(spacing*(1.25+score/30),spacing*1.1,spacing*3),strength:clamp(score/25,.2,1)});}}candidates.sort((a,b)=>b.score-a.score);for(const e of candidates){if(eddyCenters.length>=18)break;if(!eddyCenters.some(p=>Math.hypot(e.x-p.x,e.z-p.z)<Math.max(e.radius,p.radius)*1.3))eddyCenters.push(e);}field.flow=new Float32Array(N*N*5);for(let j=0;j<N;j++){for(let i=0;i<N;i++){const f=eddyVector((i/(N-1)-.5)*field.span,(j/(N-1)-.5)*field.span),k=(j*N+i)*5;field.flow[k]=f.vx;field.flow[k+1]=f.vz;field.flow[k+2]=f.rise;field.flow[k+3]=f.crest;field.flow[k+4]=f.lee;}}}resetParticles();updateInfo();}
+function updateInfo(){updateThermalUI();updateWindHeightInfo();if(mode!=="3d")el("eddyInfo").textContent="Enable 3D for terrain airflow. Drag the map to explore.";else if(map.getZoom()<11)el("eddyInfo").textContent="Zoom in for local terrain airflow.";else if(!field)el("eddyInfo").textContent="Loading terrain around this view…";else if(!field.flow)el("eddyInfo").textContent="Terrain effects off · straight wind active.";else el("eddyInfo").textContent="Windward speed-up + crest disturbance + "+eddyCenters.length+" potential lee zones · experimental.";el("terrainInfo").textContent=mode==="3d"?"Continuous 3D terrain · "+exaggeration+"× · drag to move":"Continuous 2D satellite · drag to move";}
+function buildRegion(coverageSpan){if(!ready||mode!=="3d"||map.isMoving())return;if(map.getZoom()<11){field=null;updateInfo();return;}const center=map.getCenter(),mc=ML.MercatorCoordinate.fromLngLat(center),unit=mc.meterInMercatorCoordinateUnits();const metersPerPixel=40075016.686*Math.cos(center.lat*Math.PI/180)/(512*2**map.getZoom());field={cx:mc.x,cy:mc.y,unit,span:coverageSpan||clamp(Math.max(root.clientWidth,root.clientHeight)*metersPerPixel*1.7,800,30000),heights:new Float32Array(N*N),valid:new Uint8Array(N*N),flow:null};let samples=0;for(let j=0;j<N;j++){for(let i=0;i<N;i++){const x=(i/(N-1)-.5)*field.span,z=(j/(N-1)-.5)*field.span;const p=toGeo(x,z),h=map.queryTerrainElevation(ll(p));if(Number.isFinite(h)){field.heights[j*N+i]=h/exaggeration;field.valid[j*N+i]=1;samples++;}}}if(samples<N*N*.5){field=null;updateInfo();return;}eddyCenters=[];if(el("eddies").value==="on"&&+el("eddyStrength").value>0){const b=baseWind(),step=clamp(field.span/75,18,65),far=step*3,spacing=Math.max(55,field.span/20),margin=far+spacing,candidates=[];for(let z=-field.span/2+margin;z<=field.span/2-margin;z+=spacing){for(let x=-field.span/2+margin;x<=field.span/2-margin;x+=spacing){const h=ground(x,z),up=ground(x-b.dx*step,z-b.dz*step),down=ground(x+b.dx*step,z+b.dz*step),farUp=ground(x-b.dx*far,z-b.dz*far),farDown=ground(x+b.dx*far,z+b.dz*far),score=Math.max(0,farUp-h)*.7+Math.max(0,up-down)*.8+Math.max(0,(farUp+farDown)/2-h)*.32+Math.max(0,(farUp-farDown)/(2*far))*75;if(score<7)continue;const cx=-b.dz,cz=b.dx,cross=ground(x+cx*far,z+cz*far)-ground(x-cx*far,z-cz*far);candidates.push({x,z,score,side:cross>=0?1:-1,radius:clamp(spacing*(1.25+score/30),spacing*1.1,spacing*3),strength:clamp(score/25,.2,1)});}}candidates.sort((a,b)=>b.score-a.score);for(const e of candidates){if(eddyCenters.length>=18)break;if(!eddyCenters.some(p=>Math.hypot(e.x-p.x,e.z-p.z)<Math.max(e.radius,p.radius)*1.3))eddyCenters.push(e);}field.flow=new Float32Array(N*N*5);for(let j=0;j<N;j++){for(let i=0;i<N;i++){const f=eddyVector((i/(N-1)-.5)*field.span,(j/(N-1)-.5)*field.span),k=(j*N+i)*5;field.flow[k]=f.vx;field.flow[k+1]=f.vz;field.flow[k+2]=f.rise;field.flow[k+3]=f.crest;field.flow[k+4]=f.lee;}}}resetParticles();updateInfo();}
 
 // Keep the original close terrain grid, and add progressively wider grids.
 // A tilted camera can see much farther than a zoom-only square accounts for.
@@ -374,7 +395,120 @@ function buildField(){
 }
 
 function scheduleBuild(){clearTimeout(buildTimer);buildTimer=setTimeout(buildField,180);}
-function flowAt(x,z){const b=baseWind();if(!field||!field.flow)return {vx:b.dx,vz:b.dz,rise:0,crest:0,lee:0};const f=field.flow,rise=sampleGrid(f,x,z,5,2),crest=sampleGrid(f,x,z,5,3),lee=sampleGrid(f,x,z,5,4),rough=rise*.07+crest*.25+lee*.45,wave=Math.sin(x/75+z/110-windClock*.9)*Math.cos(z/90-x/140+windClock*.6),pulse=Math.sin(x/125-z/95+windClock*.7);return {vx:sampleGrid(f,x,z,5,0)-b.dz*rough*wave+b.dx*rough*pulse*.15,vz:sampleGrid(f,x,z,5,1)+b.dx*rough*wave+b.dz*rough*pulse*.15,rise,crest,lee};}
+function terrainFlowAt(x,z){const b=baseWind();if(!field||!field.flow)return {vx:b.dx,vz:b.dz,rise:0,crest:0,lee:0};const f=field.flow,rise=sampleGrid(f,x,z,5,2),crest=sampleGrid(f,x,z,5,3),lee=sampleGrid(f,x,z,5,4),rough=rise*.07+crest*.25+lee*.45,wave=Math.sin(x/75+z/110-windClock*.9)*Math.cos(z/90-x/140+windClock*.6),pulse=Math.sin(x/125-z/95+windClock*.7);return {vx:sampleGrid(f,x,z,5,0)-b.dz*rough*wave+b.dx*rough*pulse*.15,vz:sampleGrid(f,x,z,5,1)+b.dx*rough*wave+b.dz*rough*pulse*.15,rise,crest,lee};}
+/* THERMALS MODEL START
+ * Solar geometry: NOAA General Solar Position Calculations (UTC).
+ * Slope-flow direction: NWCG PMS 425-1, chapter 7.
+ * Heating/cooling amplitudes, cloud attenuation, cover and 15-min lag below
+ * are illustrative tuning assumptions, NOT a calibrated energy-balance,
+ * atmospheric-stability, vertical-profile or CFD solver.
+ */
+function thermalSolar(ms,latitude,longitude){
+ const d=new Date(ms),year=d.getUTCFullYear(),day=(Date.UTC(year,d.getUTCMonth(),d.getUTCDate())-Date.UTC(year,0,0))/86400000;
+ const days=(Date.UTC(year+1,0,1)-Date.UTC(year,0,1))/86400000;
+ const hour=d.getUTCHours()+d.getUTCMinutes()/60+d.getUTCSeconds()/3600;
+ const g=2*Math.PI/days*(day-1+(hour-12)/24);
+ const eq=229.18*(.000075+.001868*Math.cos(g)-.032077*Math.sin(g)-.014615*Math.cos(2*g)-.040849*Math.sin(2*g));
+ const dec=.006918-.399912*Math.cos(g)+.070257*Math.sin(g)-.006758*Math.cos(2*g)+.000907*Math.sin(2*g)-.002697*Math.cos(3*g)+.00148*Math.sin(3*g);
+ const ha=(((hour*60+eq+4*longitude)%1440+1440)%1440/4-180)*Math.PI/180,lat=latitude*Math.PI/180;
+ // Local coordinates: x east, y up, z south.
+ const x=-Math.cos(dec)*Math.sin(ha),y=Math.sin(lat)*Math.sin(dec)+Math.cos(lat)*Math.cos(dec)*Math.cos(ha);
+ const z=Math.sin(lat)*Math.cos(dec)*Math.cos(ha)-Math.cos(lat)*Math.sin(dec);
+ return {x,y,z,elevation:Math.asin(clamp(y,-1,1))*180/Math.PI};
+}
+function thermalSlope(gx,gz,sun,cloud,cover,strength,shadow=false){
+ const slope=Math.hypot(gx,gz);
+ if(!Number.isFinite(slope)||slope<.002||strength<=0)return {vx:0,vz:0,drive:0};
+ const normal=Math.sqrt(1+slope*slope);
+ const direct=sun.y>0&&!shadow?Math.max(0,(-gx*sun.x+sun.y-gz*sun.z)/normal):0;
+ const diffuse=Math.max(0,sun.y)*.10;
+ const heating=(direct*(1-.75*cloud)+diffuse)*cover;
+ const cooling=.12*(1-.8*cloud);
+ const drive=clamp((heating-cooling)*2,-1,1);
+ // Nominal ceiling of 2 mph; scale is an assumption, not a local forecast.
+ const mph=2*strength*Math.min(1,slope/.25)*drive;
+ return {vx:gx/slope*mph,vz:gz/slope*mph,drive};
+}
+let thermalFrame=null,thermalUITime=0;
+function thermalMode(){return el("thermalMode").value;}
+function thermalTime(){return Date.now()+(+el("thermalTime").value)*3600000;}
+function thermalOptions(){
+ const preview=+el("thermalTime").value;
+ const current=el("thermalCloudSource").value==="weather"&&Math.abs(preview)<.01&&weatherUsable(weatherData)&&weatherData.cloud!==null&&sameWeatherPoint(weatherData.point,stand);
+ return {cloud:(current?weatherData.cloud:+el("thermalCloud").value)/100,cover:+el("thermalCover").value,strength:+el("thermalStrength").value/100,weather:current};
+}
+function prepareThermalFrame(){
+ const options=thermalOptions(),ms=thermalTime();
+ thermalFrame={...options,ms,key:[Math.floor(ms/60000),options.cloud,options.cover,options.strength].join(":" )};
+}
+function thermalGrid(){
+ if(!thermalFrame)prepareThermalFrame();
+ if(field.thermalKey===thermalFrame.key)return field.thermal;
+ const opt=thermalFrame,center=toGeo(0,0);
+ const sun=thermalSolar(opt.ms-15*60000,center[0],center[1]);
+ const grid=new Float32Array(N*N*3),step=field.span/(N-1),horizontal=Math.hypot(sun.x,sun.z);
+ for(let j=1;j<N-1;j++)for(let i=1;i<N-1;i++){
+  const at=j*N+i;
+  if(field.valid&&![at,at-1,at+1,at-N,at+N].every(k=>field.valid[k]))continue;
+  const x=(i/(N-1)-.5)*field.span,z=(j/(N-1)-.5)*field.span,h=field.heights[at];
+  const gx=(field.heights[at+1]-field.heights[at-1])/(2*step),gz=(field.heights[at+N]-field.heights[at-N])/(2*step);
+  let shadow=false;
+  if(sun.y>0&&horizontal>.001){
+   const reach=Math.min(2000,field.span*.4);
+   for(let n=1;n<=10;n++){
+    const distance=reach*n/10,sx=x+sun.x/horizontal*distance,sz=z+sun.z/horizontal*distance;
+    if(!inside(sx,sz))break;
+    const gi=Math.round((sx/field.span+.5)*(N-1)),gj=Math.round((sz/field.span+.5)*(N-1));
+    if(field.valid&&!field.valid[gj*N+gi])continue;
+    if(ground(sx,sz)>h+sun.y/horizontal*distance+1){shadow=true;break;}
+   }
+  }
+  const f=thermalSlope(gx,gz,sun,opt.cloud,opt.cover,opt.strength,shadow),k=at*3;
+  grid[k]=f.vx;grid[k+1]=f.vz;grid[k+2]=f.drive;
+ }
+ field.thermal=grid;field.thermalKey=opt.key;
+ return grid;
+}
+function thermalAt(x,z){
+ if(!field||!inside(x,z))return {vx:0,vz:0,drive:0};
+ const g=thermalGrid();return {vx:sampleGrid(g,x,z,3,0),vz:sampleGrid(g,x,z,3,1),drive:sampleGrid(g,x,z,3,2)};
+}
+function windSimulationSpeed(){return thermalMode()==="off"?+el("speed").value:thermalMode()==="only"?2:Math.max(2,+el("speed").value);}
+function flowAt(x,z){
+ const selected=thermalMode(),wind=terrainFlowAt(x,z);
+ if(selected==="off")return wind;
+ const t=thermalAt(x,z),reference=windSimulationSpeed();
+ if(selected==="only")return {vx:t.vx/reference,vz:t.vz/reference,rise:0,crest:0,lee:0};
+ const ratio=+el("speed").value/reference;
+ return {...wind,vx:wind.vx*ratio+t.vx/reference,vz:wind.vz*ratio+t.vz/reference};
+}
+function updateThermalUI(){
+ const selected=thermalMode(),options=thermalOptions(),time=thermalTime(),sun=thermalSolar(time-15*60000,stand[0],stand[1]);
+ el("thermalTimeText").textContent=new Date(time).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",timeZoneName:"short"});
+ el("thermalStrengthText").textContent=el("thermalStrength").value+"%";
+ el("thermalCloudText").textContent=Math.round(options.cloud*100)+"%";
+ el("thermalCloud").disabled=options.weather;
+ el("thermalCloudNote").textContent=options.weather?"Using fresh weather-preview cloud cover at this stand.":el("thermalCloudSource").value==="weather"?"No matching current weather for this preview time. Using the manual cloud assumption.":"Manual cloud assumption; this is not a forecast for the preview time.";
+ let text=selected==="off"?"Thermals off · existing wind active.":mode!=="3d"?"Thermal particles paused in 2D. Enable 3D to sample the terrain.":!field?"Loading terrain · zoom in to see thermal flow.":"Estimated "+(sun.y>0?"sun/shade slope flow":"nighttime drainage")+" · "+(selected==="only"?"thermals only":"wind + thermals")+". ";
+ if(selected!=="off"&&mode==="3d"&&field){
+  const p=toLocal(stand);
+  if(inside(p.x,p.z)){
+   const t=thermalAt(p.x,p.z),m=Math.hypot(t.vx,t.vz);
+   text+=m<.015?"Near-flat terrain or weak thermal drive at stand.":t.drive>0?"Upslope tendency at stand.":"Downslope tendency at stand.";
+  }else text+="Stand is outside the sampled view.";
+ }
+ el("thermalInfo").textContent=text;
+ // The cone is prevailing-wind geometry, not a thermal scent prediction.
+ if(ready){const visible=selected==="only"?"none":"visible";for(const id of ["scent-fill","scent-line"])if(map.getLayer(id))map.setLayoutProperty(id,"visibility",visible);}
+ updateSimulationUI();
+}
+function changeThermals(){
+ prepareThermalFrame();resetParticles();
+ if(thermalMode()!=="off"&&mode!=="3d"&&ready)setMode("3d");
+ updateThermalUI();
+}
+/* THERMALS MODEL END */
+
 function project(x,z){if(!field||!matrix||!inside(x,z))return null;const px=field.cx+x*field.unit,py=field.cy+z*field.unit,pz=windElevation(x,z)*field.unit;const m=matrix,w=m[3]*px+m[7]*py+m[11]*pz+m[15];if(w<=0)return null;const sx=(m[0]*px+m[4]*py+m[8]*pz+m[12])/w,sy=(m[1]*px+m[5]*py+m[9]*pz+m[13])/w,sz=(m[2]*px+m[6]*py+m[10]*pz+m[14])/w;if(!Number.isFinite(sx)||!Number.isFinite(sy)||sz< -1||sz>1)return null;return {x:(sx+1)*root.clientWidth/2,y:(1-sy)*root.clientHeight/2};}
 function colors(i){switch(el("color").value){case "contrast":return [["#6af69c","#061b10"],["#ffd45c","#241808"],["#ff6565","#260707"]][i%3];case "cyan":return ["#65F6FF","#071b22"];case "magenta":return ["#FF35D4","#ffffff"];default:return ["#FFFFFF","#080b0e"];}}
 function stroke(points,c){ctx.lineCap="round";ctx.lineJoin="round";for(let pass=0;pass<2;pass++){ctx.beginPath();points.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.strokeStyle=pass?c[0]:c[1];ctx.lineWidth=pass?1.4:2.5;ctx.stroke();}}
@@ -396,7 +530,7 @@ function spawn(p,w,h){
   }
  }
 }
-function windLoop(time){requestAnimationFrame(windLoop);if(coverageRegions.length){field=coverageRegions[0];eddyCenters=field.eddies;}const w=root.clientWidth,h=root.clientHeight,r=Math.min(devicePixelRatio||1,2);if(canvas.width!==Math.round(w*r)||canvas.height!==Math.round(h*r)){canvas.width=Math.round(w*r);canvas.height=Math.round(h*r);canvas.style.width=w+"px";canvas.style.height=h+"px";resetParticles();}ctx.setTransform(r,0,0,r,0,0);ctx.clearRect(0,0,w,h);const dt=Math.min((time-lastTime||16)/1000,.05);lastTime=time;if(!ready||!animation||map.isMoving()||+el("speed").value<=0)return;windClock+=dt;const speed=+el("speed").value,motion=+el("motion").value,count=+el("density").value,length=6+Math.min(4,speed/7.5);if(mode==="2d"){const a=(norm(bearing+180)-map.getBearing())*Math.PI/180,dx=Math.sin(a),dy=-Math.cos(a);for(let i=0;i<count;i++){const p=particles[i];p.x+=dx*speed*dt*motion*p.factor/35;p.y+=dy*speed*dt*motion*p.factor/35;if(p.x>1.03)p.x=-.03;if(p.x<-.03)p.x=1.03;if(p.y>1.03)p.y=-.03;if(p.y<-.03)p.y=1.03;stroke([{x:p.x*w,y:p.y*h},{x:p.x*w-dx*length,y:p.y*h-dy*length}],colors(i));}return;}if(!field||!matrix)return;for(let i=0;i<count;i++){const p=particles[i];p.life-=dt;if(p.life<=0)p.valid=false;if(p.valid){field=p.region;eddyCenters=field.eddies;}else{spawn(p,w,h);if(!p.valid)continue;}const f=flowAt(p.wx,p.wz),mag=Math.hypot(f.vx,f.vz);if(mag<.015){p.valid=false;continue;}const dx=f.vx/mag,dz=f.vz/mag,a=project(p.wx,p.wz),b=project(p.wx+dx*10,p.wz+dz*10);if(!a||!b){p.valid=false;continue;}const ppm=Math.hypot(b.x-a.x,b.y-a.y)/10;if(ppm<.00001){p.valid=false;continue;}let step=Math.min(speed*motion*w/35/ppm*dt*p.factor,field.span*.04);const limit=eddyCenters.length?Math.min(...eddyCenters.map(e=>e.radius))/12:field.span/100,steps=Math.min(12,Math.max(1,Math.ceil(step*2.2/limit)));step=Math.min(step,steps*limit/2.2);const ds=step/steps;for(let j=0;j<steps;j++){const v=flowAt(p.wx,p.wz),mid=flowAt(p.wx+v.vx*ds*.5,p.wz+v.vz*ds*.5);p.wx+=mid.vx*ds;p.wz+=mid.vz*ds;}const head=project(p.wx,p.wz);if(!head||head.x< -15||head.y< -15||head.x>w+15||head.y>h+15){p.valid=false;continue;}const len=Math.min(length/ppm,field.span*.04),pts=[];let x=p.wx,z=p.wz;for(let j=0;j<=5;j++){const q=project(x,z);if(!q){pts.length=0;break;}pts.push(q);const v=flowAt(x,z),m=Math.hypot(v.vx,v.vz);if(m<.015){pts.length=0;break;}x-=v.vx/m*len/5;z-=v.vz/m*len/5;}if(pts.length)stroke(pts,colors(i));}field=coverageRegions[0];eddyCenters=field.eddies;}
+function windLoop(time){requestAnimationFrame(windLoop);if(coverageRegions.length){field=coverageRegions[0];eddyCenters=field.eddies;}const w=root.clientWidth,h=root.clientHeight,r=Math.min(devicePixelRatio||1,2);if(canvas.width!==Math.round(w*r)||canvas.height!==Math.round(h*r)){canvas.width=Math.round(w*r);canvas.height=Math.round(h*r);canvas.style.width=w+"px";canvas.style.height=h+"px";resetParticles();}ctx.setTransform(r,0,0,r,0,0);ctx.clearRect(0,0,w,h);const dt=Math.min((time-lastTime||16)/1000,.05);lastTime=time;if(!ready||!animation||map.isMoving()||windSimulationSpeed()<=0)return;if(thermalMode()!=="off"){prepareThermalFrame();if(time-thermalUITime>1000){updateThermalUI();thermalUITime=time;}if(mode!=="3d")return;}windClock+=dt;const speed=windSimulationSpeed(),motion=+el("motion").value,count=+el("density").value,length=6+Math.min(4,speed/7.5);if(mode==="2d"){const a=(norm(bearing+180)-map.getBearing())*Math.PI/180,dx=Math.sin(a),dy=-Math.cos(a);for(let i=0;i<count;i++){const p=particles[i];p.x+=dx*speed*dt*motion*p.factor/35;p.y+=dy*speed*dt*motion*p.factor/35;if(p.x>1.03)p.x=-.03;if(p.x<-.03)p.x=1.03;if(p.y>1.03)p.y=-.03;if(p.y<-.03)p.y=1.03;stroke([{x:p.x*w,y:p.y*h},{x:p.x*w-dx*length,y:p.y*h-dy*length}],colors(i));}return;}if(!field||!matrix)return;for(let i=0;i<count;i++){const p=particles[i];p.life-=dt;if(p.life<=0)p.valid=false;if(p.valid){field=p.region;eddyCenters=field.eddies;}else{spawn(p,w,h);if(!p.valid)continue;}const f=flowAt(p.wx,p.wz),mag=Math.hypot(f.vx,f.vz);if(mag<.015){p.valid=false;continue;}const dx=f.vx/mag,dz=f.vz/mag,a=project(p.wx,p.wz),b=project(p.wx+dx*10,p.wz+dz*10);if(!a||!b){p.valid=false;continue;}const ppm=Math.hypot(b.x-a.x,b.y-a.y)/10;if(ppm<.00001){p.valid=false;continue;}let step=Math.min(speed*motion*w/35/ppm*dt*p.factor,field.span*.04);const limit=eddyCenters.length?Math.min(...eddyCenters.map(e=>e.radius))/12:field.span/100,steps=Math.min(12,Math.max(1,Math.ceil(step*2.2/limit)));step=Math.min(step,steps*limit/2.2);const ds=step/steps;for(let j=0;j<steps;j++){const v=flowAt(p.wx,p.wz),mid=flowAt(p.wx+v.vx*ds*.5,p.wz+v.vz*ds*.5);p.wx+=mid.vx*ds;p.wz+=mid.vz*ds;}const head=project(p.wx,p.wz);if(!head||head.x< -15||head.y< -15||head.x>w+15||head.y>h+15){p.valid=false;continue;}const len=Math.min(length/ppm,field.span*.04),pts=[];let x=p.wx,z=p.wz;for(let j=0;j<=5;j++){const q=project(x,z);if(!q){pts.length=0;break;}pts.push(q);const v=flowAt(x,z),m=Math.hypot(v.vx,v.vz);if(m<.015){pts.length=0;break;}x-=v.vx/m*len/5;z-=v.vz/m*len/5;}if(pts.length)stroke(pts,colors(i));}field=coverageRegions[0];eddyCenters=field.eddies;}
 function applyView(){if(!ready)return;map.setPaintProperty("satellite","raster-opacity",preferredView==="satellite"?1:0);map.setPaintProperty("hills","hillshade-exaggeration",preferredView==="relief"?.7:+el("shade").value/100);}
 function setMode(next){if(!ready)return;mode=next;field=null;coverageRegions=[];matrix=null;resetParticles();if(next==="3d"){map.setTerrain({source:"terrain",exaggeration});map.easeTo({pitch:+el("tilt").value,duration:500});status("Continuous 3D · drag to explore");}else{map.setTerrain(null);map.easeTo({pitch:0,bearing:0,duration:500});status("2D satellite ready");}scheduleBuild();updateInfo();}
 /* Streaming overlays: native map tiles, calculated outside the UI thread. */
@@ -990,8 +1124,12 @@ function toggleFollow(){
  updateGPSInfo();
 }
 window.addEventListener("pagehide",()=>stopGPS(""));
-function showTab(name){for(const tab of ["wind","gust","terrain","eddy","weather","overlays","more"]){el(tab).classList.toggle("hidden",tab!==name);root.querySelector('[data-tab="'+tab+'"]').classList.toggle("active",tab===name);}el("panel").classList.remove("hidden");el("open").classList.add("hidden");if(name==="weather"&&!weatherData&&!weatherLoading)loadWeather();}
+function showTab(name){for(const tab of ["wind","gust","terrain","eddy","thermals","weather","overlays","more"]){el(tab).classList.toggle("hidden",tab!==name);root.querySelector('[data-tab="'+tab+'"]').classList.toggle("active",tab===name);}el("panel").classList.remove("hidden");el("open").classList.add("hidden");if(name==="weather"&&!weatherData&&!weatherLoading)loadWeather();if(name==="thermals")updateThermalUI();}
 function closePanel(){el("panel").classList.add("hidden");el("open").classList.remove("hidden");}
+for(const id of ["thermalMode","thermalCloudSource","thermalCover"])el(id).onchange=changeThermals;
+for(const id of ["thermalTime","thermalCloud","thermalStrength"])el(id).oninput=changeThermals;
+el("thermalNow").onclick=()=>{el("thermalTime").value=0;changeThermals();};
+el("thermal3D").onclick=()=>{setMode("3d");updateThermalUI();};
 el("searchForm").onsubmit=searchPlaces;
 el("loadWeather").onclick=loadWeather;el("applyWeather").onclick=applyWeather;
 el("slopeToggle").onclick=toggleSlope;el("contourToggle").onclick=toggleContours;
@@ -1013,6 +1151,10 @@ function updateSimulationUI(){
  el("simulationMode").value=terrain?"terrain":"straight";
  el("animate").textContent=animation?"Pause simulation":"Resume simulation";
  el("animate").setAttribute("aria-pressed",String(animation));
+ if(thermalMode()!=="off"){
+  el("simulationInfo").textContent=!animation?"Simulation paused.":mode!=="3d"?"Thermals paused · enable 3D.":thermalMode()==="only"?"Running · estimated thermals only. Wind-driven eddies excluded.":"Running · selected wind + estimated thermals.";
+  return;
+ }
  el("simulationInfo").textContent=!animation?"Simulation paused.":terrain?(mode==="3d"?"Running · experimental terrain airflow at the selected height.":"Running · straight wind in 2D. Enable 3D for terrain airflow."):"Running · straight wind at the selected height.";
 }
 el("simulationMode").onchange=()=>{
@@ -1021,7 +1163,7 @@ el("simulationMode").onchange=()=>{
 };
 el("eddies").onchange=()=>{updateSimulationUI();scheduleBuild();status(el("eddies").value==="on"?"Terrain airflow enabled":"Straight-line wind selected");};
 el("eddyStrength").oninput=e=>{el("eddyText").textContent=e.target.value+"%";scheduleBuild();};
-el("resetWind").onclick=()=>{manualWind();bearing=315;el("speed").max=30;el("gustSpeed").max=45;el("windHeight").value="5";updateWindHeightInfo();el("speed").value=8;el("gustSpeed").value=12;el("spread").value=17;el("density").value=250;el("motion").value=3;el("densityText").textContent="250";el("motionText").textContent="3×";el("eddies").value="on";el("eddyStrength").value=65;el("eddyText").textContent="65%";refresh();scheduleBuild();};
+el("resetWind").onclick=()=>{el("thermalMode").value="off";el("thermalTime").value=0;prepareThermalFrame();updateThermalUI();manualWind();bearing=315;el("speed").max=30;el("gustSpeed").max=45;el("windHeight").value="5";updateWindHeightInfo();el("speed").value=8;el("gustSpeed").value=12;el("spread").value=17;el("density").value=250;el("motion").value=3;el("densityText").textContent="250";el("motionText").textContent="3×";el("eddies").value="on";el("eddyStrength").value=65;el("eddyText").textContent="65%";refresh();scheduleBuild();};
 el("standToggle").onclick=()=>{const h=el("standList").classList.toggle("hidden");el("standToggle").textContent=h?"📍 Stand ▸":"📍 Stand ▾";};
 el("place").onclick=()=>{placing=true;status("Tap the map to set stand");};
 el("drag").onclick=()=>{dragging=!dragging;if(standMarker)standMarker.setDraggable(dragging);el("drag").textContent="Drag stand: "+(dragging?"on":"off");};
@@ -1049,7 +1191,7 @@ let pointer=null;
 function turnCompass(e){const r=el("wheel").getBoundingClientRect();setBearing(Math.atan2(e.clientX-r.left-r.width/2,-(e.clientY-r.top-r.height/2))*180/Math.PI);}
 function wireCompass(target,type){target.addEventListener("pointerdown",e=>{e.preventDefault();e.stopPropagation();pointer={id:e.pointerId,type,x:e.clientX,y:e.clientY,left:el("compass").offsetLeft,top:el("compass").offsetTop};target.setPointerCapture(e.pointerId);if(type==="turn")turnCompass(e);});target.addEventListener("pointermove",e=>{if(!pointer||pointer.id!==e.pointerId)return;e.preventDefault();if(type==="move"){el("compass").style.left=clamp(pointer.left+e.clientX-pointer.x,0,root.clientWidth-76)+"px";el("compass").style.right="auto";el("compass").style.top=clamp(pointer.top+e.clientY-pointer.y,0,root.clientHeight-100)+"px";}else turnCompass(e);});for(const n of ["pointerup","pointercancel"])target.addEventListener(n,e=>{if(pointer&&pointer.id===e.pointerId)pointer=null;});}
 wireCompass(el("move"),"move");wireCompass(el("wheel"),"turn");el("bearingButton").addEventListener("pointerdown",e=>e.stopPropagation());
-updateWeatherUI();updateWindHeightInfo();refresh();requestAnimationFrame(windLoop);
+updateWeatherUI();updateThermalUI();updateWindHeightInfo();refresh();requestAnimationFrame(windLoop);
 try{
  css(CDN+"maplibre-gl.css");if(!window.maplibregl)await script(CDN+"maplibre-gl.js");ML=window.maplibregl;
  map=new ML.Map({container:el("map"),center:ll(HOME),zoom:15,pitch:0,maxPitch:75,minZoom:2,maxZoom:19,renderWorldCopies:false,pixelRatio:Math.min(devicePixelRatio||1,2),attributionControl:{compact:true},style:{version:8,
