@@ -1,5 +1,3 @@
-
-
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <div id="awl77">
 <style>
@@ -30,9 +28,11 @@
 #awl77 .open{position:absolute;bottom:8px;left:8px}
 #awl77 .note{font-size:10px;line-height:1.5}
 #awl77 .leaflet-control-attribution{font-size:8px}
-#awl77 .compass{transform:scale(.25);transform-origin:top right} #awl77 .panel{transform:scale(.75);transform-origin:bottom left}
+#awl77 .compass{transform:scale(.25);transform-origin:top right}
+#awl77 .panel{transform:scale(.75);transform-origin:bottom left}
 #awl77 .stands{transform:scale(.75);transform-origin:top right}
 </style>
+
 <div id="a77map" class="map"></div>
 <canvas id="a77canvas" class="wind"></canvas>
 
@@ -77,6 +77,7 @@
 <button data-tab="wind" class="active">Wind</button>
 <button data-tab="gust">Gusts</button>
 <button data-tab="terrain">3D</button>
+<button data-tab="eddy">Eddies</button>
 <button data-tab="more">More</button>
 <button id="a77close">✕</button>
 </div>
@@ -145,6 +146,22 @@
 <div id="a77terrainInfo" class="note">2D satellite active</div>
 </div>
 
+<div id="a77eddy" class="hidden">
+<div class="line">
+<label>Leeward eddies
+<select id="a77eddies">
+<option value="on" selected>On — experimental</option>
+<option value="off">Off — straight wind</option>
+</select></label>
+</div>
+<div class="line">
+<label>Eddy strength <b id="a77eddyText">65%</b>
+<input id="a77eddyStrength" type="range" min="0" max="100" step="5" value="65"></label>
+</div>
+<div id="a77eddyInfo" class="note">Enable 3D to find potential leeward eddy zones.</div>
+<div class="note">Experimental terrain-based visualization, not measured airflow. Colors are for visibility. The yellow scent cone follows prevailing wind, not the eddies.</div>
+</div>
+
 <div id="a77more" class="hidden">
 <div class="line">
 <button id="a77resetWind">Reset wind</button>
@@ -160,7 +177,7 @@
 </select></label>
 </div>
 <div id="a77accuracy" class="note">GPS not requested</div>
-<div class="note">V7.7 · Wind positions track sampled terrain elevation in 3D. Wind is a directional visualization, not a calculated airflow or turbulence model. Elevation is regional DEM data, not LiDAR.</div>
+<div class="note">V7.7 + experimental eddies. Elevation is regional DEM data, not LiDAR. Green, yellow, and red are visibility colors, not airflow diagnostics.</div>
 </div>
 </div>
 </div>
@@ -199,14 +216,12 @@ let dragging=false;
 let animation=true;
 let busy=false;
 let token=0;
-
 let statusTimer;
 
 function status(s){
  clearTimeout(statusTimer);
  el("status").textContent=s;
  el("status").classList.remove("hidden");
-
  statusTimer=setTimeout(()=>{
   el("status").classList.add("hidden");
  },4000);
@@ -276,6 +291,7 @@ function refresh(){
 function setBearing(v){
  bearing=norm(Math.round(v/5)*5);
  refresh();
+ buildEddies();
 }
 
 function circle(p,color,r){
@@ -675,6 +691,190 @@ function terrainHit(e){
  return hits.length?hits[0].point:null;
 }
 
+/* EXPERIMENTAL LEEWARD EDDIES */
+
+let eddyCenters=[];
+let flowGrid=null;
+const FLOW_N=81;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+function rawGround(x,z){
+ return sample(
+  (x/worldW+.5)*(gridW-1),
+  (z/worldD+.5)*(gridH-1)
+ );
+}
+
+function updateEddyInfo(){
+ if(!heights||mode!=="3d"){
+  el("eddyInfo").textContent=
+   "Enable 3D to find potential leeward eddy zones.";
+ }else if(el("eddies").value!=="on"||
+          +el("eddyStrength").value===0){
+  el("eddyInfo").textContent=
+   "Eddies off · original straight-line wind active.";
+ }else{
+  el("eddyInfo").textContent=eddyCenters.length+
+   " potential leeward zones · experimental estimates.";
+ }
+}
+
+function buildEddies(){
+ eddyCenters=[];
+ flowGrid=null;
+ if(!heights||mode!=="3d"||el("eddies").value!=="on"){
+  updateEddyInfo();
+  reset3DParticles();
+  return;
+ }
+
+ const b=windVector();
+ const step=clamp(Math.min(worldW,worldD)/75,18,65);
+ const far=step*3;
+ const spacing=Math.max(55,Math.min(worldW,worldD)/20);
+ const margin=far+spacing;
+ const candidates=[];
+
+ for(let z=-worldD/2+margin;z<=worldD/2-margin;z+=spacing){
+  for(let x=-worldW/2+margin;x<=worldW/2-margin;x+=spacing){
+   const h=rawGround(x,z);
+   const up=rawGround(x-b.dx*step,z-b.dz*step);
+   const down=rawGround(x+b.dx*step,z+b.dz*step);
+   const farUp=rawGround(x-b.dx*far,z-b.dz*far);
+   const farDown=rawGround(x+b.dx*far,z+b.dz*far);
+   const pocket=Math.max(0,(farUp+farDown)/2-h);
+
+   const score=
+    Math.max(0,farUp-h)*.7+
+    Math.max(0,up-down)*.8+
+    pocket*.32+
+    Math.max(0,(farUp-farDown)/(2*far))*75;
+
+   if(score<7)continue;
+
+   const cx=-b.dz;
+   const cz=b.dx;
+   const cross=
+    rawGround(x+cx*far,z+cz*far)-
+    rawGround(x-cx*far,z-cz*far);
+
+   candidates.push({
+    x,z,score,
+    side:cross>=0?1:-1,
+    radius:clamp(
+     spacing*(1.25+score/30),
+     spacing*1.1,
+     spacing*3
+    ),
+    strength:clamp(score/25,.2,1)
+   });
+  }
+ }
+
+ candidates.sort((a,b)=>b.score-a.score);
+
+ for(const e of candidates){
+  if(eddyCenters.length>=18)break;
+  const crowded=eddyCenters.some(p=>
+   Math.hypot(e.x-p.x,e.z-p.z)<
+   Math.max(e.radius,p.radius)*1.3
+  );
+  if(!crowded)eddyCenters.push(e);
+ }
+
+ buildFlowGrid();
+ reset3DParticles();
+}
+
+function eddyVector(x,z){
+ const b=windVector();
+ const user=+el("eddyStrength").value/100;
+ let vx=b.dx;
+ let vz=b.dz;
+
+ for(const e of eddyCenters){
+  const rx=(x-e.x)/e.radius;
+  const rz=(z-e.z)/e.radius;
+  const q2=rx*rx+rz*rz;
+  if(q2>=2.56)continue;
+
+  const power=user*e.strength;
+  const local=power*Math.exp(-2.2*q2);
+  const swirl=power*3.6*Math.exp(-1.7*q2);
+
+  vx*=1-local*.9;
+  vz*=1-local*.9;
+
+  vx+=-rz*e.side*swirl-rx*local*.12;
+  vz+= rx*e.side*swirl-rz*local*.12;
+ }
+
+ const magnitude=Math.hypot(vx,vz);
+ if(magnitude>2.2){
+  vx*=2.2/magnitude;
+  vz*=2.2/magnitude;
+ }
+ return {vx,vz};
+}
+
+/* Cache the field so terrain calculations do not run per particle. */
+
+function buildFlowGrid(){
+ flowGrid=null;
+ if(
+  heights&&mode==="3d"&&
+  el("eddies").value==="on"&&
+  +el("eddyStrength").value>0&&
+  eddyCenters.length
+ ){
+  flowGrid=new Float32Array(FLOW_N*FLOW_N*2);
+  for(let j=0;j<FLOW_N;j++){
+   for(let i=0;i<FLOW_N;i++){
+    const f=eddyVector(
+     (i/(FLOW_N-1)-.5)*worldW,
+     (j/(FLOW_N-1)-.5)*worldD
+    );
+    const k=(j*FLOW_N+i)*2;
+    flowGrid[k]=f.vx;
+    flowGrid[k+1]=f.vz;
+   }
+  }
+ }
+ updateEddyInfo();
+}
+
+function flowAt(x,z){
+ if(!flowGrid){
+  const b=windVector();
+  return {vx:b.dx,vz:b.dz};
+ }
+
+ const gx=clamp(
+  (x/worldW+.5)*(FLOW_N-1),0,FLOW_N-1
+ );
+ const gz=clamp(
+  (z/worldD+.5)*(FLOW_N-1),0,FLOW_N-1
+ );
+ const ix=Math.floor(gx);
+ const iz=Math.floor(gz);
+ const jx=Math.min(ix+1,FLOW_N-1);
+ const jz=Math.min(iz+1,FLOW_N-1);
+ const a=gx-ix;
+ const b=gz-iz;
+ const k00=(iz*FLOW_N+ix)*2;
+ const k10=(iz*FLOW_N+jx)*2;
+ const k01=(jz*FLOW_N+ix)*2;
+ const k11=(jz*FLOW_N+jx)*2;
+
+ const blend=c=>
+  flowGrid[k00+c]*(1-a)*(1-b)+
+  flowGrid[k10+c]*a*(1-b)+
+  flowGrid[k01+c]*(1-a)*b+
+  flowGrid[k11+c]*a*b;
+
+ return {vx:blend(0),vz:blend(1)};
+}
+
 /* WIND PARTICLES */
 
 const MAX_PARTICLES=600;
@@ -764,7 +964,7 @@ function draw2DWind(dt,s,speed,motion,count,colors){
  }
 }
 
-/* 3D TERRAIN-FOLLOWING WIND */
+/* 3D WIND */
 
 function windVector(){
  const a=norm(bearing+180)*Math.PI/180;
@@ -815,7 +1015,8 @@ function spawn3DParticle(p,s){
   if(!q)continue;
   const check=projectTerrain(q.x,q.z,s);
   if(!check)continue;
-  if(check.x<0||check.x>s.width||check.y<0||check.y>s.height)continue;
+  if(check.x<0||check.x>s.width||
+     check.y<0||check.y>s.height)continue;
   p.wx=q.x;
   p.wz=q.z;
   p.valid=true;
@@ -837,14 +1038,26 @@ function pixelScale(x,z,dx,dz,s){
 function draw3DTerrainStreak(x,z,dx,dz,lengthMeters,s,colors){
  const pieces=5;
  const pts=[];
+ let px=x;
+ let pz=z;
+
  for(let j=0;j<=pieces;j++){
-  const t=j/pieces;
-  const q=projectTerrain(
-   x-dx*lengthMeters*t,z-dz*lengthMeters*t,s
-  );
+  const q=projectTerrain(px,pz,s);
   if(!q)return;
   pts.push(q);
+
+  if(flowGrid){
+   const f=flowAt(px,pz);
+   const m=Math.hypot(f.vx,f.vz);
+   if(m<.015)return;
+   px-=f.vx/m*lengthMeters/pieces;
+   pz-=f.vz/m*lengthMeters/pieces;
+  }else{
+   px=x-dx*lengthMeters*(j+1)/pieces;
+   pz=z-dz*lengthMeters*(j+1)/pieces;
+  }
  }
+
  ctx.lineCap="round";
  ctx.lineJoin="round";
  for(let pass=0;pass<2;pass++){
@@ -862,9 +1075,6 @@ function draw3DTerrainStreak(x,z,dx,dz,lengthMeters,s,colors){
 
 function draw3DWind(dt,s,speed,motion,count,colors){
  if(!camera||!heights)return;
- const direction=windVector();
- const dx=direction.dx;
- const dz=direction.dz;
  const pixelLength=6+Math.min(4,speed/7.5);
  const desiredPixelsPerSecond=speed*motion*s.width/35;
 
@@ -874,36 +1084,82 @@ function draw3DWind(dt,s,speed,motion,count,colors){
    spawn3DParticle(p,s);
    if(!p.valid)continue;
   }
+
+  const f=flowAt(p.wx,p.wz);
+  const magnitude=Math.hypot(f.vx,f.vz);
+  if(magnitude<.015){
+   spawn3DParticle(p,s);
+   continue;
+  }
+
+  const dx=f.vx/magnitude;
+  const dz=f.vz/magnitude;
   const scale=pixelScale(p.wx,p.wz,dx,dz,s);
   if(!scale){
    spawn3DParticle(p,s);
    continue;
   }
-  const metersPerSecond=desiredPixelsPerSecond/scale.pxPerMeter;
-  const step=Math.min(
-   Math.max(0,metersPerSecond*dt*p.factor),
+
+  let step=Math.min(
+   Math.max(
+    0,
+    desiredPixelsPerSecond/scale.pxPerMeter*dt*p.factor
+   ),
    Math.max(worldW,worldD)*.08
   );
-  p.wx+=dx*step;
-  p.wz+=dz*step;
+
+  if(flowGrid){
+   const limit=Math.min(
+    ...eddyCenters.map(e=>e.radius)
+   )/12;
+   const steps=Math.min(
+    16,Math.max(1,Math.ceil(step*2.2/limit))
+   );
+   step=Math.min(step,steps*limit/2.2);
+   const h=step/steps;
+
+   for(let j=0;j<steps;j++){
+    const a=flowAt(p.wx,p.wz);
+    const mid=flowAt(
+     p.wx+a.vx*h*.5,
+     p.wz+a.vz*h*.5
+    );
+    p.wx+=mid.vx*h;
+    p.wz+=mid.vz*h;
+    if(!insideTerrain(p.wx,p.wz))break;
+   }
+  }else{
+   p.wx+=f.vx*step;
+   p.wz+=f.vz*step;
+  }
+
   if(!insideTerrain(p.wx,p.wz)){
    spawn3DParticle(p,s);
    continue;
   }
+
   const head=projectTerrain(p.wx,p.wz,s);
   if(!head||head.x< -15||head.x>s.width+15||
      head.y< -15||head.y>s.height+15){
    spawn3DParticle(p,s);
    continue;
   }
-  const currentScale=pixelScale(p.wx,p.wz,dx,dz,s);
+
+  const current=flowAt(p.wx,p.wz);
+  const m=Math.hypot(current.vx,current.vz);
+  if(m<.015)continue;
+  const ux=current.vx/m;
+  const uz=current.vz/m;
+  const currentScale=pixelScale(p.wx,p.wz,ux,uz,s);
   if(!currentScale)continue;
+
   const lengthMeters=Math.min(
    pixelLength/currentScale.pxPerMeter,
    Math.max(worldW,worldD)*.04
   );
+
   draw3DTerrainStreak(
-   p.wx,p.wz,dx,dz,lengthMeters,s,windColors(i)
+   p.wx,p.wz,ux,uz,lengthMeters,s,windColors(i)
   );
  }
 }
@@ -911,7 +1167,9 @@ function draw3DWind(dt,s,speed,motion,count,colors){
 function drawWind(time){
  const s=canvasSize();
  ctx.clearRect(0,0,s.width,s.height);
- const dt=Math.min(Math.max(0,(time-lastWindTime||16)/1000),.05);
+ const dt=Math.min(
+  Math.max(0,(time-lastWindTime||16)/1000),.05
+ );
  lastWindTime=time;
  if(mode!==lastWindMode){
   if(mode==="3d")reset3DParticles();
@@ -923,6 +1181,7 @@ function drawWind(time){
  const motion=+el("motion").value;
  const count=+el("density").value;
  const colors=windColors();
+
  if(mode==="2d"){
   draw2DWind(dt,s,speed,motion,count,colors);
  }else if(mode==="3d"){
@@ -957,7 +1216,8 @@ function controls(){
   if(dragging&&!placing&&pointers.size===1){
    const p=terrainHit(e);
    const q=worldPoint(stand);
-   movingStand=!!p&&Math.hypot(p.x-q.x,p.z-q.z)<worldW/55;
+   movingStand=!!p&&
+    Math.hypot(p.x-q.x,p.z-q.z)<worldW/55;
   }
  }
 
@@ -968,6 +1228,7 @@ function controls(){
   }
   pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
   const ps=[...pointers.values()];
+
   if(ps.length===1){
    if(movingStand){
     const p=terrainHit(e);
@@ -981,7 +1242,10 @@ function controls(){
    }
    last={...ps[0]};
   }else if(ps.length===2){
-   const d=Math.hypot(ps[0].x-ps[1].x,ps[0].y-ps[1].y);
+   const d=Math.hypot(
+    ps[0].x-ps[1].x,
+    ps[0].y-ps[1].y
+   );
    if(pinch)distance*=pinch/d;
    pinch=d;
    last=null;
@@ -1015,6 +1279,7 @@ function controls(){
  c.addEventListener("pointerup",pu);
  c.addEventListener("pointercancel",pu);
  c.addEventListener("wheel",wh,{passive:false});
+
  removeControls=()=>{
   c.removeEventListener("pointerdown",pd);
   c.removeEventListener("pointermove",pm);
@@ -1041,6 +1306,7 @@ async function loadElevation(id){
  cv.height=height;
  const context=cv.getContext("2d",{willReadFrequently:true});
  const jobs=[];
+
  for(let y=0;y<c.ny;y++){
   for(let x=0;x<c.nx;x++){
    jobs.push((async()=>{
@@ -1052,12 +1318,15 @@ async function loadElevation(id){
    })());
   }
  }
+
  await Promise.all(jobs);
  if(id!==token)return null;
+
  const pixels=context.getImageData(0,0,width,height).data;
  const arr=new Float32Array(width*height);
  let min=Infinity;
  let max=-Infinity;
+
  for(let i=0;i<arr.length;i++){
   const k=i*4;
   const v=pixels[k]*256+pixels[k+1]+pixels[k+2]/256-32768;
@@ -1065,6 +1334,7 @@ async function loadElevation(id){
   min=Math.min(min,v);
   max=Math.max(max,v);
  }
+
  if(max-min<.01)throw Error("Elevation data empty");
  return {c,width,height,arr,min,max};
 }
@@ -1079,10 +1349,13 @@ async function loadImagery(id,c){
  cv.height=rows*256;
  const context=cv.getContext("2d");
  const queue=[];
+
  for(let y=0;y<rows;y++){
   for(let x=0;x<cols;x++)queue.push({x,y});
  }
+
  let loaded=0;
+
  async function worker(){
   while(queue.length&&id===token){
    const p=queue.shift();
@@ -1100,7 +1373,10 @@ async function loadImagery(id,c){
    }catch(e){}
   }
  }
- await Promise.all(Array.from({length:Math.min(8,total)},worker));
+
+ await Promise.all(
+  Array.from({length:Math.min(8,total)},worker)
+ );
  if(id!==token||!loaded)return null;
  return {cv,loaded,total};
 }
@@ -1116,6 +1392,7 @@ async function start3D(){
  busy=true;
  const id=++token;
  status("Loading V7.7 elevation…");
+
  try{
   if(!window.THREE){
    await loadScript(
@@ -1125,9 +1402,9 @@ async function start3D(){
   if(id!==token)return;
   T=window.THREE;
   if(!T)throw Error("Three.js unavailable");
+
   const data=await loadElevation(id);
   if(!data||id!==token)return;
-
   cfg=data.c;
   gridW=data.width;
   gridH=data.height;
@@ -1135,6 +1412,7 @@ async function start3D(){
   low=data.min;
   high=data.max;
   exaggeration=+el("height").value;
+
   const meters=2*Math.PI*6378137/(2**cfg.z);
   const cosine=Math.cos(HOME[0]*Math.PI/180);
   worldW=cfg.nx*meters*cosine;
@@ -1143,12 +1421,15 @@ async function start3D(){
   host=document.createElement("div");
   host.className="three";
   el("map").appendChild(host);
+
   scene=new T.Scene();
   scene.background=new T.Color("#24372f");
   camera=new T.PerspectiveCamera(
-   48,Math.max(1,host.clientWidth)/Math.max(1,host.clientHeight),
+   48,
+   Math.max(1,host.clientWidth)/Math.max(1,host.clientHeight),
    1,1000000
   );
+
   renderer=new T.WebGLRenderer({
    antialias:true,powerPreference:"high-performance"
   });
@@ -1156,6 +1437,7 @@ async function start3D(){
   renderer.setSize(host.clientWidth,host.clientHeight);
   renderer.outputColorSpace=T.SRGBColorSpace;
   host.appendChild(renderer.domElement);
+
   scene.add(new T.AmbientLight(0xffffff,1.5));
   const sun=new T.DirectionalLight(0xffffff,2);
   sun.position.set(-700,1300,500);
@@ -1165,7 +1447,8 @@ async function start3D(){
    color:0xaac8a0,roughness:1,side:T.DoubleSide
   });
   geometry=new T.PlaneGeometry(
-   worldW,worldD,Math.min(gridW-1,256),Math.min(gridH-1,256)
+   worldW,worldD,
+   Math.min(gridW-1,256),Math.min(gridH-1,256)
   );
   geometry.rotateX(-Math.PI/2);
   mesh=new T.Mesh(geometry,reliefMaterial);
@@ -1186,6 +1469,7 @@ async function start3D(){
   center.y=ground(center.x,center.z);
   updateCamera();
   controls();
+
   resizeObserver=new ResizeObserver(()=>{
    if(!renderer||!camera||!host)return;
    const width=host.clientWidth;
@@ -1202,13 +1486,16 @@ async function start3D(){
    map.remove();
    map=null;
   }
+
   mode="3d";
+  buildEddies();
   reset3DParticles();
   render3D();
   status("V7.7 terrain ready · loading satellite…");
 
   const imagery=await loadImagery(id,cfg);
   if(id!==token||mode!=="3d")return;
+
   if(imagery){
    const texture=new T.CanvasTexture(imagery.cv);
    texture.colorSpace=T.SRGBColorSpace;
@@ -1222,8 +1509,10 @@ async function start3D(){
    satelliteMaterial.needsUpdate=true;
    imageryReady=true;
    applyView();
-   status("V7.7 3D ready · "+imagery.loaded+"/"+imagery.total+
-    " satellite tiles");
+   status(
+    "V7.7 3D ready · "+imagery.loaded+"/"+imagery.total+
+    " satellite tiles"
+   );
   }else{
    status("3D relief ready · satellite unavailable");
   }
@@ -1273,6 +1562,7 @@ function cleanup3D(){
  }
  if(renderer)renderer.dispose();
  if(host)host.remove();
+
  renderer=null;
  scene=null;
  camera=null;
@@ -1287,6 +1577,9 @@ function cleanup3D(){
  reliefMaterial=null;
  satelliteMaterial=null;
  imageryReady=false;
+ eddyCenters=[];
+ flowGrid=null;
+ updateEddyInfo();
  reset3DParticles();
 }
 
@@ -1329,11 +1622,13 @@ function requestGPS(move){
    gps=[pos.coords.latitude,pos.coords.longitude];
    el("accuracy").textContent="GPS accuracy approximately "+
     Math.round(pos.coords.accuracy*3.28084)+" feet";
+
    if(mode==="2d"&&map){
     if(gpsMarker)gpsMarker.setLatLng(gps);
     else gpsMarker=circle(gps,"#3b82f6",8);
    }
    if(mode==="3d")updateMarkers();
+
    if(move){
     setStand(gps);
     status("Stand moved to GPS");
@@ -1355,12 +1650,29 @@ el("plus").onclick=()=>setBearing(bearing+5);
 el("speed").oninput=refresh;
 el("gustSpeed").oninput=refresh;
 el("spread").onchange=refresh;
+
 el("density").oninput=e=>{
  el("densityText").textContent=e.target.value;
 };
 el("motion").oninput=e=>{
  el("motionText").textContent=e.target.value+"×";
 };
+
+el("eddies").onchange=()=>{
+ buildEddies();
+ status(
+  el("eddies").value==="on"?
+  "Experimental eddies enabled in 3D":
+  "Straight-line wind restored"
+ );
+};
+
+el("eddyStrength").oninput=e=>{
+ el("eddyText").textContent=e.target.value+"%";
+ buildFlowGrid();
+ reset3DParticles();
+};
+
 el("resetWind").onclick=()=>{
  bearing=315;
  el("speed").value=8;
@@ -1370,9 +1682,14 @@ el("resetWind").onclick=()=>{
  el("motion").value=3;
  el("densityText").textContent="250";
  el("motionText").textContent="3×";
+ el("eddies").value="on";
+ el("eddyStrength").value=65;
+ el("eddyText").textContent="65%";
+ buildEddies();
  reset3DParticles();
  refresh();
 };
+
 el("standToggle").onclick=()=>{
  const hidden=el("standList").classList.toggle("hidden");
  el("standToggle").textContent=hidden?"📍 Stand ▸":"📍 Stand ▾";
@@ -1389,6 +1706,7 @@ el("drag").onclick=()=>{
  }
  el("drag").textContent="Drag stand: "+(dragging?"on":"off");
 };
+
 el("gps").onclick=()=>requestGPS(false);
 el("gpsStand").onclick=()=>requestGPS(true);
 el("home").onclick=()=>centerOn(HOME,15);
@@ -1397,10 +1715,12 @@ el("resetStand").onclick=()=>{
  setStand(HOME);
  centerOn(HOME,16);
 };
+
 el("enable").onclick=start3D;
 el("back").onclick=back2D;
 el("relief").onclick=()=>setView("relief");
 el("satellite").onclick=()=>setView("satellite");
+
 el("tilt").oninput=e=>{
  const v=+e.target.value;
  el("tiltText").textContent=v+"°";
@@ -1409,6 +1729,7 @@ el("tilt").oninput=e=>{
   updateCamera();
  }
 };
+
 el("height").oninput=e=>{
  exaggeration=+e.target.value;
  el("heightText").textContent=exaggeration+"×";
@@ -1418,12 +1739,14 @@ el("height").oninput=e=>{
   updateCamera();
  }
 };
+
 el("shade").oninput=e=>{
  const v=+e.target.value;
  el("shadeText").textContent=v+"%";
  if(shadeMaterial)shadeMaterial.opacity=v/100;
  applyView();
 };
+
 el("left").onclick=()=>{
  if(mode==="3d"){
   theta-=Math.PI/6;
@@ -1444,7 +1767,7 @@ el("animate").onclick=()=>{
 /* CONTROL PANEL */
 
 function showTab(name){
- for(const tab of ["wind","gust","terrain","more"]){
+ for(const tab of ["wind","gust","terrain","eddy","more"]){
   el(tab).classList.toggle("hidden",tab!==name);
   root.querySelector('[data-tab="'+tab+'"]')
    .classList.toggle("active",tab===name);
@@ -1452,10 +1775,12 @@ function showTab(name){
  el("panel").classList.remove("hidden");
  el("open").classList.add("hidden");
 }
+
 function closePanel(){
  el("panel").classList.add("hidden");
  el("open").classList.remove("hidden");
 }
+
 root.querySelectorAll("[data-tab]").forEach(b=>{
  b.onclick=()=>showTab(b.dataset.tab);
 });
@@ -1488,6 +1813,7 @@ function wireCompass(target,type){
   target.setPointerCapture(e.pointerId);
   if(type==="turn")turnCompass(e);
  });
+
  target.addEventListener("pointermove",e=>{
   if(!pointer||pointer.id!==e.pointerId)return;
   e.preventDefault();
@@ -1503,6 +1829,7 @@ function wireCompass(target,type){
    turnCompass(e);
   }
  });
+
  for(const name of ["pointerup","pointercancel"]){
   target.addEventListener(name,e=>{
    if(pointer&&pointer.id===e.pointerId)pointer=null;
