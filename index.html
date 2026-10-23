@@ -86,6 +86,7 @@ html,body{margin:0;height:100%;overflow:hidden}
 <button id="a77standToggle">📍 Stand ▸</button>
 <button id="a77goStand">↩ Return to stand</button>
 <div id="a77standList" class="standlist hidden">
+<button id="a77northUp">↑ North Up</button>
 <button id="a77place">Tap map to place stand</button>
 <button id="a77drag">Drag stand: off</button>
 <button id="a77gps">Show GPS beacon</button>
@@ -651,6 +652,11 @@ el("gps").onclick=()=>requestGPS(false);el("gpsStand").onclick=()=>requestGPS(tr
 el("follow").onclick=toggleFollow;el("stopGPS").onclick=()=>stopGPS();
 el("home").onclick=()=>{setStand(propertyStand);goLocation(HOME,"Autauga property",false);};
 el("goStand").onclick=()=>centerOn(stand,17);el("resetStand").onclick=()=>{setStand(area);centerOn(area,16);};
+el("northUp").onclick=()=>{
+ if(!ready)return;
+ map.rotateTo(0,{duration:350});
+ status("North up");
+};
 el("enable").onclick=()=>setMode("3d");el("back").onclick=()=>setMode("2d");
 el("relief").onclick=()=>{preferredView="relief";applyView();};el("satellite").onclick=()=>{preferredView="satellite";applyView();};
 el("tilt").oninput=e=>{el("tiltText").textContent=e.target.value+"°";if(ready&&mode==="3d")map.setPitch(+e.target.value);};
