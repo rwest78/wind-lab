@@ -45,6 +45,14 @@ html,body{margin:0;height:100%;overflow:hidden}
 #awl77 .gps-beacon{opacity:1!important}
 #awl77 .gps-beacon.surface-beacon{position:absolute;left:0;top:0;z-index:900;pointer-events:none;will-change:transform}
 #awl77 .gps-beacon:after{background:#0047cc!important}
+#awl77 .gps-beacon{
+ background:#0047cc!important;
+ border:3px solid #fff!important;
+ border-radius:50%;
+ box-shadow:0 0 0 2px #00255e;
+ opacity:1!important;
+}
+#awl77 .gps-beacon:after{display:none!important}
 </style>
 
 <div id="a77map" class="map"></div>
@@ -100,6 +108,15 @@ html,body{margin:0;height:100%;overflow:hidden}
 </div>
 
 <div id="a77wind">
+<div class="line">
+<label for="a77windHeight">Wind height above terrain</label>
+<select id="a77windHeight">
+<option value="5" selected>5 ft</option>
+<option value="20">20 ft</option>
+</select>
+</div>
+<div id="a77windHeightInfo" class="note">5 ft above sampled terrain · enable 3D to see height.</div>
+
 <div class="line">
 <button id="a77minus">−5°</button>
 <label>Wind FROM <b id="a77bearingText">315° NW</b>
@@ -171,7 +188,7 @@ html,body{margin:0;height:100%;overflow:hidden}
 <div class="line"><label>Terrain effect strength <b id="a77eddyText">65%</b>
 <input id="a77eddyStrength" type="range" min="0" max="100" step="5" value="65"></label></div>
 <div id="a77eddyInfo" class="note">Enable 3D to find potential leeward eddy zones.</div>
-<div class="note">Windward lift, crest disturbance, and leeward eddies are experimental visual estimates. Distant airflow uses coarser terrain estimates. Colors are for visibility. The yellow cone follows prevailing wind.</div>
+<div class="note">Windward speed-up, crest disturbance, and leeward eddies are experimental visual estimates. The 5 ft and 20 ft layers use the same horizontal flow estimate. Distant airflow uses coarser terrain estimates. Colors are for visibility. The yellow cone follows prevailing wind.</div>
 </div>
 <div id="a77more" class="hidden">
 <form id="a77searchForm">
@@ -244,9 +261,20 @@ function toGeo(x,z){const q=new ML.MercatorCoordinate(field.cx+x*field.unit,fiel
 function inside(x,z){return !!field&&Math.abs(x)<=field.span/2&&Math.abs(z)<=field.span/2;}
 function sampleGrid(array,x,z,channels=1,c=0){const gx=clamp((x/field.span+.5)*(N-1),0,N-1),gy=clamp((z/field.span+.5)*(N-1),0,N-1);const ix=Math.floor(gx),iy=Math.floor(gy),jx=Math.min(ix+1,N-1),jy=Math.min(iy+1,N-1),a=gx-ix,b=gy-iy;return array[(iy*N+ix)*channels+c]*(1-a)*(1-b)+array[(iy*N+jx)*channels+c]*a*(1-b)+array[(jy*N+ix)*channels+c]*(1-a)*b+array[(jy*N+jx)*channels+c]*a*b;}
 function ground(x,z){return sampleGrid(field.heights,x,z);}
+function windHeightFeet(){return el("windHeight").value==="20"?20:5;}
+function windHeightMeters(){return windHeightFeet()*.3048;}
+// Exaggeration raises the rendered ground only. Keep the selected AGL offset
+// in physical meters, independent of the terrain-height slider.
+function windElevation(x,z){return ground(x,z)*exaggeration+windHeightMeters();}
+function updateWindHeightInfo(){
+ el("windHeightInfo").textContent=windHeightFeet()+" ft above sampled terrain · "+
+  (mode==="3d"?"fixed-height layer":"enable 3D to see height")+
+  ". Same experimental horizontal flow at both heights.";
+}
+
 function features(x,z){const b=baseWind(),step=clamp(field.span/75,18,65),far=step*3,user=+el("eddyStrength").value/100,cx=-b.dz,cz=b.dx;if(!inside(x-b.dx*far,z-b.dz*far)||!inside(x+b.dx*far,z+b.dz*far)||!inside(x-cx*step,z-cz*step)||!inside(x+cx*step,z+cz*step))return {rise:0,crest:0,lee:0,cross:0};const h=ground(x,z),up=ground(x-b.dx*step,z-b.dz*step),down=ground(x+b.dx*step,z+b.dz*step),farUp=ground(x-b.dx*far,z-b.dz*far),farDown=ground(x+b.dx*far,z+b.dz*far),left=ground(x-cx*step,z-cz*step),right=ground(x+cx*step,z+cz*step);return {rise:clamp(Math.max(0,(down-up)/(2*step))*5,0,1)*user,crest:clamp(Math.max(0,h-(farUp+farDown)/2)/12,0,1)*user,lee:clamp(Math.max(0,farUp-h)/25,0,1)*user,cross:clamp((right-left)/(2*step)*4,-1,1)*user};}
 function eddyVector(x,z){const b=baseWind(),f=features(x,z),turn=-f.cross*.6,speedup=1+f.rise*.2+f.crest*.3-f.lee*.28,c=Math.cos(turn),s=Math.sin(turn);let vx=(b.dx*c-b.dz*s)*speedup,vz=(b.dx*s+b.dz*c)*speedup;const user=+el("eddyStrength").value/100;for(const e of eddyCenters){const rx=(x-e.x)/e.radius,rz=(z-e.z)/e.radius,q2=rx*rx+rz*rz;if(q2>=2.56)continue;const power=user*e.strength,local=power*Math.exp(-2.2*q2),swirl=power*3.6*Math.exp(-1.7*q2);vx*=1-local*.9;vz*=1-local*.9;vx+=-rz*e.side*swirl-rx*local*.12;vz+=rx*e.side*swirl-rz*local*.12;}const m=Math.hypot(vx,vz);if(m>2.2){vx*=2.2/m;vz*=2.2/m;}return {vx,vz,rise:f.rise,crest:f.crest,lee:f.lee};}
-function updateInfo(){if(mode!=="3d")el("eddyInfo").textContent="Enable 3D for terrain airflow. Drag the map to explore.";else if(map.getZoom()<11)el("eddyInfo").textContent="Zoom in for local terrain airflow.";else if(!field)el("eddyInfo").textContent="Loading terrain around this view…";else if(!field.flow)el("eddyInfo").textContent="Terrain effects off · straight wind active.";else el("eddyInfo").textContent="Windward lift + crest disturbance + "+eddyCenters.length+" potential lee zones · experimental.";el("terrainInfo").textContent=mode==="3d"?"Continuous 3D terrain · "+exaggeration+"× · drag to move":"Continuous 2D satellite · drag to move";}
+function updateInfo(){updateWindHeightInfo();if(mode!=="3d")el("eddyInfo").textContent="Enable 3D for terrain airflow. Drag the map to explore.";else if(map.getZoom()<11)el("eddyInfo").textContent="Zoom in for local terrain airflow.";else if(!field)el("eddyInfo").textContent="Loading terrain around this view…";else if(!field.flow)el("eddyInfo").textContent="Terrain effects off · straight wind active.";else el("eddyInfo").textContent="Windward speed-up + crest disturbance + "+eddyCenters.length+" potential lee zones · experimental.";el("terrainInfo").textContent=mode==="3d"?"Continuous 3D terrain · "+exaggeration+"× · drag to move":"Continuous 2D satellite · drag to move";}
 function buildRegion(coverageSpan){if(!ready||mode!=="3d"||map.isMoving())return;if(map.getZoom()<11){field=null;updateInfo();return;}const center=map.getCenter(),mc=ML.MercatorCoordinate.fromLngLat(center),unit=mc.meterInMercatorCoordinateUnits();const metersPerPixel=40075016.686*Math.cos(center.lat*Math.PI/180)/(512*2**map.getZoom());field={cx:mc.x,cy:mc.y,unit,span:coverageSpan||clamp(Math.max(root.clientWidth,root.clientHeight)*metersPerPixel*1.7,800,30000),heights:new Float32Array(N*N),flow:null};let samples=0;for(let j=0;j<N;j++){for(let i=0;i<N;i++){const x=(i/(N-1)-.5)*field.span,z=(j/(N-1)-.5)*field.span;const p=toGeo(x,z),h=map.queryTerrainElevation(ll(p));if(Number.isFinite(h)){field.heights[j*N+i]=h/exaggeration;samples++;}}}if(samples<N*N*.5){field=null;updateInfo();return;}eddyCenters=[];if(el("eddies").value==="on"&&+el("eddyStrength").value>0){const b=baseWind(),step=clamp(field.span/75,18,65),far=step*3,spacing=Math.max(55,field.span/20),margin=far+spacing,candidates=[];for(let z=-field.span/2+margin;z<=field.span/2-margin;z+=spacing){for(let x=-field.span/2+margin;x<=field.span/2-margin;x+=spacing){const h=ground(x,z),up=ground(x-b.dx*step,z-b.dz*step),down=ground(x+b.dx*step,z+b.dz*step),farUp=ground(x-b.dx*far,z-b.dz*far),farDown=ground(x+b.dx*far,z+b.dz*far),score=Math.max(0,farUp-h)*.7+Math.max(0,up-down)*.8+Math.max(0,(farUp+farDown)/2-h)*.32+Math.max(0,(farUp-farDown)/(2*far))*75;if(score<7)continue;const cx=-b.dz,cz=b.dx,cross=ground(x+cx*far,z+cz*far)-ground(x-cx*far,z-cz*far);candidates.push({x,z,score,side:cross>=0?1:-1,radius:clamp(spacing*(1.25+score/30),spacing*1.1,spacing*3),strength:clamp(score/25,.2,1)});}}candidates.sort((a,b)=>b.score-a.score);for(const e of candidates){if(eddyCenters.length>=18)break;if(!eddyCenters.some(p=>Math.hypot(e.x-p.x,e.z-p.z)<Math.max(e.radius,p.radius)*1.3))eddyCenters.push(e);}field.flow=new Float32Array(N*N*5);for(let j=0;j<N;j++){for(let i=0;i<N;i++){const f=eddyVector((i/(N-1)-.5)*field.span,(j/(N-1)-.5)*field.span),k=(j*N+i)*5;field.flow[k]=f.vx;field.flow[k+1]=f.vz;field.flow[k+2]=f.rise;field.flow[k+3]=f.crest;field.flow[k+4]=f.lee;}}}resetParticles();updateInfo();}
 
 // Keep the original close terrain grid, and add progressively wider grids.
@@ -283,7 +311,7 @@ function buildField(){
 
 function scheduleBuild(){clearTimeout(buildTimer);buildTimer=setTimeout(buildField,180);}
 function flowAt(x,z){const b=baseWind();if(!field||!field.flow)return {vx:b.dx,vz:b.dz,rise:0,crest:0,lee:0};const f=field.flow,rise=sampleGrid(f,x,z,5,2),crest=sampleGrid(f,x,z,5,3),lee=sampleGrid(f,x,z,5,4),rough=rise*.07+crest*.25+lee*.45,wave=Math.sin(x/75+z/110-windClock*.9)*Math.cos(z/90-x/140+windClock*.6),pulse=Math.sin(x/125-z/95+windClock*.7);return {vx:sampleGrid(f,x,z,5,0)-b.dz*rough*wave+b.dx*rough*pulse*.15,vz:sampleGrid(f,x,z,5,1)+b.dx*rough*wave+b.dz*rough*pulse*.15,rise,crest,lee};}
-function project(x,z){if(!field||!matrix||!inside(x,z))return null;const f=flowAt(x,z),wave=Math.sin(x/85-z/115+windClock*.85),air=(f.rise*9+f.crest*(10+wave*4)+f.lee*(8+wave*6))*clamp(+el("speed").value/8,0,1.5);const px=field.cx+x*field.unit,py=field.cy+z*field.unit,pz=((ground(x,z)+air)*exaggeration+2)*field.unit;const m=matrix,w=m[3]*px+m[7]*py+m[11]*pz+m[15];if(w<=0)return null;const sx=(m[0]*px+m[4]*py+m[8]*pz+m[12])/w,sy=(m[1]*px+m[5]*py+m[9]*pz+m[13])/w,sz=(m[2]*px+m[6]*py+m[10]*pz+m[14])/w;if(!Number.isFinite(sx)||!Number.isFinite(sy)||sz< -1||sz>1)return null;return {x:(sx+1)*root.clientWidth/2,y:(1-sy)*root.clientHeight/2};}
+function project(x,z){if(!field||!matrix||!inside(x,z))return null;const px=field.cx+x*field.unit,py=field.cy+z*field.unit,pz=windElevation(x,z)*field.unit;const m=matrix,w=m[3]*px+m[7]*py+m[11]*pz+m[15];if(w<=0)return null;const sx=(m[0]*px+m[4]*py+m[8]*pz+m[12])/w,sy=(m[1]*px+m[5]*py+m[9]*pz+m[13])/w,sz=(m[2]*px+m[6]*py+m[10]*pz+m[14])/w;if(!Number.isFinite(sx)||!Number.isFinite(sy)||sz< -1||sz>1)return null;return {x:(sx+1)*root.clientWidth/2,y:(1-sy)*root.clientHeight/2};}
 function colors(i){switch(el("color").value){case "contrast":return [["#6af69c","#061b10"],["#ffd45c","#241808"],["#ff6565","#260707"]][i%3];case "cyan":return ["#65F6FF","#071b22"];case "magenta":return ["#FF35D4","#ffffff"];default:return ["#FFFFFF","#080b0e"];}}
 function stroke(points,c){ctx.lineCap="round";ctx.lineJoin="round";for(let pass=0;pass<2;pass++){ctx.beginPath();points.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.strokeStyle=pass?c[0]:c[1];ctx.lineWidth=pass?1.4:2.5;ctx.stroke();}}
 function spawn(p,w,h){
@@ -447,12 +475,16 @@ function closePanel(){el("panel").classList.add("hidden");el("open").classList.r
 el("searchForm").onsubmit=searchPlaces;
 el("direction").oninput=e=>setBearing(+e.target.value);
 el("minus").onclick=()=>setBearing(bearing-5);el("plus").onclick=()=>setBearing(bearing+5);
+el("windHeight").onchange=()=>{
+ resetParticles();updateWindHeightInfo();
+ status("Wind layer: "+windHeightFeet()+" ft above sampled terrain");
+};
 el("speed").oninput=refresh;el("gustSpeed").oninput=refresh;el("spread").onchange=refresh;
 el("density").oninput=e=>el("densityText").textContent=e.target.value;
 el("motion").oninput=e=>el("motionText").textContent=e.target.value+"×";
 el("eddies").onchange=()=>{scheduleBuild();status(el("eddies").value==="on"?"Terrain airflow enabled":"Straight-line wind selected");};
 el("eddyStrength").oninput=e=>{el("eddyText").textContent=e.target.value+"%";scheduleBuild();};
-el("resetWind").onclick=()=>{bearing=315;el("speed").value=8;el("gustSpeed").value=12;el("spread").value=17;el("density").value=250;el("motion").value=3;el("densityText").textContent="250";el("motionText").textContent="3×";el("eddies").value="on";el("eddyStrength").value=65;el("eddyText").textContent="65%";refresh();scheduleBuild();};
+el("resetWind").onclick=()=>{bearing=315;el("windHeight").value="5";updateWindHeightInfo();el("speed").value=8;el("gustSpeed").value=12;el("spread").value=17;el("density").value=250;el("motion").value=3;el("densityText").textContent="250";el("motionText").textContent="3×";el("eddies").value="on";el("eddyStrength").value=65;el("eddyText").textContent="65%";refresh();scheduleBuild();};
 el("standToggle").onclick=()=>{const h=el("standList").classList.toggle("hidden");el("standToggle").textContent=h?"📍 Stand ▸":"📍 Stand ▾";};
 el("place").onclick=()=>{placing=true;status("Tap the map to set stand");};
 el("drag").onclick=()=>{dragging=!dragging;if(standMarker)standMarker.setDraggable(dragging);el("drag").textContent="Drag stand: "+(dragging?"on":"off");};
@@ -473,7 +505,7 @@ let pointer=null;
 function turnCompass(e){const r=el("wheel").getBoundingClientRect();setBearing(Math.atan2(e.clientX-r.left-r.width/2,-(e.clientY-r.top-r.height/2))*180/Math.PI);}
 function wireCompass(target,type){target.addEventListener("pointerdown",e=>{e.preventDefault();e.stopPropagation();pointer={id:e.pointerId,type,x:e.clientX,y:e.clientY,left:el("compass").offsetLeft,top:el("compass").offsetTop};target.setPointerCapture(e.pointerId);if(type==="turn")turnCompass(e);});target.addEventListener("pointermove",e=>{if(!pointer||pointer.id!==e.pointerId)return;e.preventDefault();if(type==="move"){el("compass").style.left=clamp(pointer.left+e.clientX-pointer.x,0,root.clientWidth-76)+"px";el("compass").style.right="auto";el("compass").style.top=clamp(pointer.top+e.clientY-pointer.y,0,root.clientHeight-100)+"px";}else turnCompass(e);});for(const n of ["pointerup","pointercancel"])target.addEventListener(n,e=>{if(pointer&&pointer.id===e.pointerId)pointer=null;});}
 wireCompass(el("move"),"move");wireCompass(el("wheel"),"turn");el("bearingButton").addEventListener("pointerdown",e=>e.stopPropagation());
-refresh();requestAnimationFrame(windLoop);
+updateWindHeightInfo();refresh();requestAnimationFrame(windLoop);
 try{
  css(CDN+"maplibre-gl.css");if(!window.maplibregl)await script(CDN+"maplibre-gl.js");ML=window.maplibregl;
  map=new ML.Map({container:el("map"),center:ll(HOME),zoom:15,pitch:0,maxPitch:75,minZoom:2,maxZoom:19,renderWorldCopies:false,pixelRatio:Math.min(devicePixelRatio||1,2),attributionControl:{compact:true},style:{version:8,sources:{satellite:{type:"raster",tiles:[SAT],tileSize:256,maxzoom:19,attribution:"© Esri"},terrain:{type:"raster-dem",tiles:[DEM],tileSize:256,maxzoom:15,encoding:"terrarium",attribution:"Elevation: Mapzen / AWS"},shade:{type:"raster-dem",tiles:[DEM],tileSize:256,maxzoom:15,encoding:"terrarium"}},layers:[{id:"background",type:"background",paint:{"background-color":"#aac8a0"}},{id:"satellite",type:"raster",source:"satellite"},{id:"hills",type:"hillshade",source:"shade",paint:{"hillshade-exaggeration":.45}}]}});
