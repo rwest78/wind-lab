@@ -31,9 +31,17 @@ html,body{margin:0;height:100%;overflow:hidden}
 #awl77 .note{font-size:10px;line-height:1.5}
 #awl77 .maplibregl-ctrl-attrib{font-size:8px}
 #awl77 .pin{border:2px solid white;border-radius:50%;box-shadow:0 0 5px #111}
-#awl77 .maplibregl-marker{pointer-events:auto} #awl77 .compass{transform:scale(.25);transform-origin:top right}
+#awl77 .maplibregl-marker{pointer-events:auto} #awl77 .compass{transform:scale(.30);transform-origin:top right}
 #awl77 .panel{transform:scale(.75);transform-origin:bottom left}
 #awl77 .stands{transform:scale(.75);transform-origin:top right}
+#awl77 .gps-beacon{width:20px;height:20px;position:relative;pointer-events:none}
+#awl77 .gps-beacon:before{content:"";position:absolute;inset:-7px;background:#369cff55;border:1px solid #6cbeff;border-radius:50%;animation:a77gpsPulse 2s ease-out infinite}
+#awl77 .gps-beacon:after{content:"";position:absolute;inset:0;background:#1688ff;border:3px solid white;border-radius:50%;box-shadow:0 0 5px #002b56}
+#awl77 .gps-beacon.stale:before{animation:none;background:#9ba5ad44;border-color:#adb8c0}
+#awl77 .gps-beacon.stale:after{background:#7e8d9a}
+#awl77 button[aria-pressed="true"]{background:#b8dcc3;color:#173a26;font-weight:bold}
+@keyframes a77gpsPulse{0%{transform:scale(.65);opacity:.9}100%{transform:scale(1.8);opacity:0}}
+@media(prefers-reduced-motion:reduce){#awl77 .gps-beacon:before{animation:none}}
 </style>
 
 <div id="a77map" class="map"></div>
@@ -65,7 +73,10 @@ html,body{margin:0;height:100%;overflow:hidden}
 <div id="a77standList" class="standlist hidden">
 <button id="a77place">Tap map to place stand</button>
 <button id="a77drag">Drag stand: off</button>
-<button id="a77gps">Show GPS</button>
+<button id="a77gps">Show GPS beacon</button>
+<button id="a77follow" aria-pressed="false">Follow Me: off</button>
+<button id="a77stopGPS">Stop GPS</button>
+<div id="a77gpsInfo" class="note" aria-live="polite" style="max-width:180px">GPS off</div>
 <button id="a77gpsStand">Set stand at GPS</button>
 <button id="a77home">Return to property</button>
 <button id="a77goStand">Return to stand</button>
@@ -207,6 +218,8 @@ let map,ML,ready=false,mode="2d",bearing=315,stand=HOME.slice(),propertyStand=HO
 let placing=false,dragging=false,animation=true,standMarker,gpsMarker,exaggeration=3,preferredView="satellite";
 let statusTimer,buildTimer,matrix=null,field=null,eddyCenters=[],windClock=0,lastTime=0;
 let searchToken=0,searchController=null,lastTileBuild=0;
+let gpsWatch=null,gpsSession=0,gpsFix=null,gpsTimer=null;
+let following=false,gpsCenterPending=false,gpsStandPending=false,gpsError="";
 const N=65,MAX=600;
 let coverageRegions=[];
 const particles=Array.from({length:MAX},()=>({valid:false,x:Math.random(),y:Math.random(),wx:0,wz:0,band:0,life:0,region:null,factor:.8+Math.random()*.4}));
@@ -292,11 +305,108 @@ function windLoop(time){requestAnimationFrame(windLoop);if(coverageRegions.lengt
 function applyView(){if(!ready)return;map.setPaintProperty("satellite","raster-opacity",preferredView==="satellite"?1:0);map.setPaintProperty("hills","hillshade-exaggeration",preferredView==="relief"?.7:+el("shade").value/100);}
 function setMode(next){if(!ready)return;mode=next;field=null;coverageRegions=[];matrix=null;resetParticles();if(next==="3d"){map.setTerrain({source:"terrain",exaggeration});map.easeTo({pitch:+el("tilt").value,duration:500});status("Continuous 3D · drag to explore");}else{map.setTerrain(null);map.easeTo({pitch:0,bearing:0,duration:500});status("2D satellite ready");}scheduleBuild();updateInfo();}
 function validCoordinates(p){return p.length===2&&p.every(Number.isFinite)&&Math.abs(p[0])<=85&&Math.abs(p[1])<=180;}
-function goLocation(p,label,moveStand=true){if(!ready||!validCoordinates(p))return;if(moveStand){if(Math.hypot((stand[0]-HOME[0])*111320,(stand[1]-HOME[1])*94000)<10000)propertyStand=stand.slice();setStand(p);}area=p.slice();placing=false;map.flyTo({center:ll(p),zoom:15,duration:1600});status("Viewing "+label);}
-function centerOn(p,zoom){if(ready)map.flyTo({center:ll(p),zoom,duration:1000});}
+function goLocation(p,label,moveStand=true){if(!ready||!validCoordinates(p))return;pauseFollow();if(moveStand){if(Math.hypot((stand[0]-HOME[0])*111320,(stand[1]-HOME[1])*94000)<10000)propertyStand=stand.slice();setStand(p);}area=p.slice();placing=false;map.flyTo({center:ll(p),zoom:15,duration:1600});status("Viewing "+label);}
+function centerOn(p,zoom){pauseFollow();if(ready)map.flyTo({center:ll(p),zoom,duration:1000});}
 function parseCoordinates(text){const m=text.trim().match(/^([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)$/);return m?[Number(m[1]),Number(m[2])]:null;}
 async function searchPlaces(e){e.preventDefault();const text=el("searchInput").value.trim(),id=++searchToken;if(searchController)searchController.abort();el("searchResults").replaceChildren();el("searchButton").disabled=false;const coords=parseCoordinates(text);if(coords){if(!validCoordinates(coords)){el("searchInfo").textContent="Use latitude -85 to 85 and longitude -180 to 180.";return;}closePanel();goLocation(coords,text);return;}if(text.length<2){el("searchInfo").textContent="Enter a town, state, ZIP, or coordinates.";return;}const controller=new AbortController();searchController=controller;const timeout=setTimeout(()=>controller.abort(),15000);el("searchButton").disabled=true;el("searchInfo").textContent="Searching US places…";try{const url=new URL("https://geocoding-api.open-meteo.com/v1/search");url.search=new URLSearchParams({name:text,count:"8",language:"en",countryCode:"US"});const response=await fetch(url,{signal:controller.signal});if(!response.ok)throw Error("HTTP "+response.status);const data=await response.json();if(id!==searchToken)return;if(data.error)throw Error(data.reason||"Search failed");const results=(data.results||[]).filter(r=>r.country_code==="US"&&validCoordinates([r.latitude,r.longitude]));el("searchInfo").textContent=results.length?"Choose a place:":"No match. Try a nearby town and state, ZIP, or coordinates.";for(const r of results){const button=document.createElement("button"),label=[r.name,r.admin1,r.admin2].filter(Boolean).join(", ");button.type="button";button.textContent=label;button.style.textAlign="left";button.onclick=()=>{if(id!==searchToken)return;searchToken++;el("searchResults").replaceChildren();el("searchInfo").textContent="Selected: "+label;closePanel();goLocation([r.latitude,r.longitude],label);};el("searchResults").appendChild(button);}}catch(error){if(id===searchToken)el("searchInfo").textContent=error.name==="AbortError"?"Search timed out. Try again or enter coordinates.":"Search unavailable: "+error.message;}finally{clearTimeout(timeout);if(id===searchToken){el("searchButton").disabled=false;searchController=null;}}}
-function requestGPS(move){if(!navigator.geolocation){status("GPS unavailable");return;}status("Requesting GPS…");navigator.geolocation.getCurrentPosition(pos=>{gps=[pos.coords.latitude,pos.coords.longitude];el("accuracy").textContent="GPS accuracy approximately "+Math.round(pos.coords.accuracy*3.28084)+" feet";if(gpsMarker)gpsMarker.setLngLat(ll(gps));else gpsMarker=makeMarker(gps,"#3b82f6",16);if(move)setStand(gps);centerOn(gps,16);status(move?"Stand moved to GPS":"GPS shown · stand unchanged");},e=>status("GPS: "+e.message),{enableHighAccuracy:true,timeout:15000,maximumAge:0});}
+/* Live GPS: the beacon moves independently of the stand. */
+function emptyGPS(){return {type:"FeatureCollection",features:[]};}
+function gpsFresh(){return !!gpsFix&&Date.now()-gpsFix.timestamp<30000&&!gpsError;}
+function updateGPSInfo(){
+ const active=gpsWatch!==null;
+ const age=gpsFix?Math.max(0,Math.floor((Date.now()-gpsFix.timestamp)/1000)):0;
+ const fresh=gpsFresh();
+ if(gpsMarker)gpsMarker.getElement().classList.toggle("stale",!fresh);
+ let message=gpsError?gpsError:!active?"GPS off":!gpsFix?"Waiting for GPS…":
+  (fresh?"GPS live":"Last GPS fix")+" · ±"+Math.round(gpsFix.accuracy*3.28084)+" ft"+
+  (age>=10?" · "+age+"s ago":"")+(following?" · following":"");
+ el("gpsInfo").textContent=message;
+ el("accuracy").textContent=message;
+ el("follow").textContent="Follow Me: "+(following?(fresh?"on":"waiting…"):"off");
+ el("follow").setAttribute("aria-pressed",String(following));
+}
+function pauseFollow(){following=false;gpsCenterPending=false;updateGPSInfo();}
+function drawGPSAccuracy(){
+ const source=ready&&map.getSource("gps-accuracy");
+ if(!source)return;
+ if(!gpsFix){source.setData(emptyGPS());return;}
+ const ring=[];
+ for(let i=0;i<=64;i++)ring.push(ll(destination(gps,i*360/64,gpsFix.accuracy)));
+ source.setData({type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[ring]}});
+}
+function centerGPS(initial=false){
+ if(!ready||!gpsFresh())return;
+ const target=map.project(ll(gps));
+ if(!initial&&Math.hypot(target.x-root.clientWidth/2,target.y-root.clientHeight/2)<4)return;
+ map.easeTo({center:ll(gps),zoom:initial?Math.max(16,map.getZoom()):map.getZoom(),duration:initial?650:350});
+}
+function receiveGPS(pos){
+ const c=pos.coords,p=[c.latitude,c.longitude];
+ if(!validCoordinates(p)||!Number.isFinite(c.accuracy)||c.accuracy<0)return;
+ const timestamp=Number.isFinite(pos.timestamp)?pos.timestamp:Date.now();
+ if(gpsFix&&timestamp<gpsFix.timestamp)return;
+ gps=p;gpsFix={timestamp,accuracy:c.accuracy};gpsError="";
+ if(!gpsMarker){
+  const dot=document.createElement("div");dot.className="gps-beacon";
+  dot.setAttribute("role","img");dot.setAttribute("aria-label","Your GPS location");
+  gpsMarker=new ML.Marker({element:dot}).setLngLat(ll(gps)).addTo(map);
+ }else gpsMarker.setLngLat(ll(gps));
+ drawGPSAccuracy();
+ const fresh=gpsFresh();
+ if(gpsStandPending&&fresh){gpsStandPending=false;setStand(gps);status("Stand set at GPS");}
+ if(fresh&&(following||gpsCenterPending)){
+  const initial=gpsCenterPending;gpsCenterPending=false;centerGPS(initial);
+ }
+ updateGPSInfo();
+}
+function stopGPS(message="GPS stopped"){
+ gpsSession++;
+ if(gpsWatch!==null)navigator.geolocation.clearWatch(gpsWatch);
+ gpsWatch=null;
+ clearInterval(gpsTimer);gpsTimer=null;
+ following=false;gpsCenterPending=false;gpsStandPending=false;
+ gpsFix=null;gps=null;gpsError="";
+ if(gpsMarker){gpsMarker.remove();gpsMarker=null;}
+ drawGPSAccuracy();updateGPSInfo();
+ if(message)status(message);
+}
+function startGPS(){
+ if(!ready){status("Wait for the map to load");return false;}
+ if(!window.isSecureContext||!navigator.geolocation){status("GPS requires a secure browser with location access");return false;}
+ if(gpsWatch!==null)return true;
+ const session=++gpsSession;
+ gpsError="";
+ try{
+  gpsWatch=navigator.geolocation.watchPosition(
+   pos=>{if(session===gpsSession)receiveGPS(pos);},
+   error=>{
+    if(session!==gpsSession)return;
+    if(error.code===1){stopGPS("");gpsError="Location permission denied. Allow location for this site in your browser settings.";}
+    else gpsError=error.code===3?"GPS timed out · waiting for another fix":"GPS unavailable · waiting for another fix";
+    updateGPSInfo();status(gpsError);
+   },
+   {enableHighAccuracy:true,timeout:20000,maximumAge:0}
+  );
+  gpsTimer=setInterval(updateGPSInfo,5000);
+  updateGPSInfo();
+  return true;
+ }catch(error){stopGPS("");status("GPS: "+error.message);return false;}
+}
+function requestGPS(move){
+ if(!startGPS())return;
+ gpsStandPending=!!move;gpsCenterPending=true;
+ if(gpsFresh())receiveGPS({coords:{latitude:gps[0],longitude:gps[1],accuracy:gpsFix.accuracy},timestamp:gpsFix.timestamp});
+ else status("Waiting for GPS permission or a location fix…");
+}
+function toggleFollow(){
+ if(following){pauseFollow();status("Follow Me off · GPS beacon stays live");return;}
+ if(!startGPS())return;
+ following=true;gpsCenterPending=true;
+ if(gpsFresh()){gpsCenterPending=false;centerGPS(true);}
+ else status("Follow Me waiting for GPS…");
+ updateGPSInfo();
+}
+window.addEventListener("pagehide",()=>stopGPS(""));
 function showTab(name){for(const tab of ["wind","gust","terrain","eddy","more"]){el(tab).classList.toggle("hidden",tab!==name);root.querySelector('[data-tab="'+tab+'"]').classList.toggle("active",tab===name);}el("panel").classList.remove("hidden");el("open").classList.add("hidden");}
 function closePanel(){el("panel").classList.add("hidden");el("open").classList.remove("hidden");}
 el("searchForm").onsubmit=searchPlaces;
@@ -312,6 +422,7 @@ el("standToggle").onclick=()=>{const h=el("standList").classList.toggle("hidden"
 el("place").onclick=()=>{placing=true;status("Tap the map to set stand");};
 el("drag").onclick=()=>{dragging=!dragging;if(standMarker)standMarker.setDraggable(dragging);el("drag").textContent="Drag stand: "+(dragging?"on":"off");};
 el("gps").onclick=()=>requestGPS(false);el("gpsStand").onclick=()=>requestGPS(true);
+el("follow").onclick=toggleFollow;el("stopGPS").onclick=()=>stopGPS();
 el("home").onclick=()=>{setStand(propertyStand);goLocation(HOME,"Autauga property",false);};
 el("goStand").onclick=()=>centerOn(stand,17);el("resetStand").onclick=()=>{setStand(area);centerOn(area,16);};
 el("enable").onclick=()=>setMode("3d");el("back").onclick=()=>setMode("2d");
@@ -331,8 +442,11 @@ refresh();requestAnimationFrame(windLoop);
 try{
  css(CDN+"maplibre-gl.css");if(!window.maplibregl)await script(CDN+"maplibre-gl.js");ML=window.maplibregl;
  map=new ML.Map({container:el("map"),center:ll(HOME),zoom:15,pitch:0,maxPitch:75,minZoom:2,maxZoom:19,renderWorldCopies:false,pixelRatio:Math.min(devicePixelRatio||1,2),attributionControl:{compact:true},style:{version:8,sources:{satellite:{type:"raster",tiles:[SAT],tileSize:256,maxzoom:19,attribution:"© Esri"},terrain:{type:"raster-dem",tiles:[DEM],tileSize:256,maxzoom:15,encoding:"terrarium",attribution:"Elevation: Mapzen / AWS"},shade:{type:"raster-dem",tiles:[DEM],tileSize:256,maxzoom:15,encoding:"terrarium"}},layers:[{id:"background",type:"background",paint:{"background-color":"#aac8a0"}},{id:"satellite",type:"raster",source:"satellite"},{id:"hills",type:"hillshade",source:"shade",paint:{"hillshade-exaggeration":.45}}]}});
- map.on("load",()=>{ready=true;map.addSource("scent",{type:"geojson",data:{type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[fanCoordinates()]}}});map.addLayer({id:"scent-fill",type:"fill",source:"scent",paint:{"fill-color":"#ffe132","fill-opacity":.32}});map.addLayer({id:"scent-line",type:"line",source:"scent",paint:{"line-color":"#ffe132","line-width":3}});map.addLayer({id:"wind-matrix",type:"custom",renderingMode:"3d",render(gl,args){matrix=Array.from(args.defaultProjectionData.mainMatrix);}});makeMarker(NORTH,"#ef4444",14);makeMarker(SOUTH,"#fb923c",14);standMarker=makeMarker(stand,"#ffdc20",23,dragging);standMarker.on("drag",()=>{const p=standMarker.getLngLat();stand=[p.lat,p.lng];refresh();});refresh();updateInfo();status("Continuous map ready · drag to explore");});
+ map.on("load",()=>{ready=true;map.addSource("gps-accuracy",{type:"geojson",data:emptyGPS()});
+map.addLayer({id:"gps-accuracy-fill",type:"fill",source:"gps-accuracy",paint:{"fill-color":"#299dff","fill-opacity":.15}});
+map.addLayer({id:"gps-accuracy-line",type:"line",source:"gps-accuracy",paint:{"line-color":"#65bdff","line-width":1.5,"line-opacity":.8}});map.addSource("scent",{type:"geojson",data:{type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[fanCoordinates()]}}});map.addLayer({id:"scent-fill",type:"fill",source:"scent",paint:{"fill-color":"#ffe132","fill-opacity":.32}});map.addLayer({id:"scent-line",type:"line",source:"scent",paint:{"line-color":"#ffe132","line-width":3}});map.addLayer({id:"wind-matrix",type:"custom",renderingMode:"3d",render(gl,args){matrix=Array.from(args.defaultProjectionData.mainMatrix);}});makeMarker(NORTH,"#ef4444",14);makeMarker(SOUTH,"#fb923c",14);standMarker=makeMarker(stand,"#ffdc20",23,dragging);standMarker.on("drag",()=>{const p=standMarker.getLngLat();stand=[p.lat,p.lng];refresh();});refresh();updateInfo();status("Continuous map ready · drag to explore");});
  map.on("click",e=>{if(placing){placing=false;setStand([e.lngLat.lat,e.lngLat.lng]);}});
+ map.on("dragstart",()=>{if(following){pauseFollow();status("Follow Me paused · GPS beacon stays live");}});
  map.on("movestart",()=>{field=null;coverageRegions=[];resetParticles();});map.on("moveend",()=>{el("tiltText").textContent=Math.round(map.getPitch())+"°";if(mode==="3d")el("tilt").value=clamp(map.getPitch(),0,65);scheduleBuild();});map.on("idle",scheduleBuild);map.on("sourcedata",e=>{if(mode==="3d"&&e.sourceId==="terrain"&&!map.isMoving()&&performance.now()-lastTileBuild>700){lastTileBuild=performance.now();scheduleBuild();}});
  map.on("error",e=>{if(!ready)status("Map loading: "+(e.error?.message||"connection error"));});
  new ResizeObserver(()=>{map.resize();scheduleBuild();}).observe(root);
