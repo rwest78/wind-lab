@@ -31,6 +31,9 @@
 #awl77 .compass{transform:scale(.25);transform-origin:top right}
 #awl77 .panel{transform:scale(.75);transform-origin:bottom left}
 #awl77 .stands{transform:scale(.75);transform-origin:top right}
+#awl77 .searchinput{min-width:0;flex:1;width:100%;font-size:16px;padding:8px;border-radius:7px;border:1px solid #b8d6c1;background:#173b2b;color:white}
+#awl77 .searchresults{display:flex;flex-direction:column;gap:5px}
+#awl77 .note a{color:#b9e8c6}
 </style>
 
 <div id="a77map" class="map"></div>
@@ -159,10 +162,21 @@
 <input id="a77eddyStrength" type="range" min="0" max="100" step="5" value="65"></label>
 </div>
 <div id="a77eddyInfo" class="note">Enable 3D for windward lift, crest disturbance, and leeward eddies.</div>
-<div class="note">Experimental visual estimates from terrain. Particle lift and disturbance are illustrative, not measured turbulence. Colors are for visibility. The yellow cone follows prevailing wind.</div>
+<div class="note">Experimental visual estimates from terrain, not measured turbulence. Colors are for visibility. The yellow cone follows prevailing wind.</div>
 </div>
 
 <div id="a77more" class="hidden">
+<form id="a77searchForm">
+<label for="a77searchInput">Nationwide search</label>
+<div class="line">
+<input id="a77searchInput" class="searchinput" type="search" placeholder="Town, state / ZIP / lat, lon" autocomplete="off" enterkeyhint="search">
+<button id="a77searchButton" type="submit">Search</button>
+</div>
+</form>
+<div id="a77searchInfo" class="note" aria-live="polite">Examples: Marlinton, WV · State College, PA. Choosing a result moves the stand there. Pan in 2D to your spot, then Enable 3D.</div>
+<div id="a77searchResults" class="searchresults"></div>
+<div class="note">Place search: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> / <a href="https://www.geonames.org/" target="_blank" rel="noopener">GeoNames</a></div>
+
 <div class="line">
 <button id="a77resetWind">Reset wind</button>
 <button id="a77animate">Animation: on</button>
@@ -177,7 +191,7 @@
 </select></label>
 </div>
 <div id="a77accuracy" class="note">GPS not requested</div>
-<div class="note">V7.7 + experimental hill airflow. Elevation is regional DEM data, not LiDAR. Green, yellow, and red are visibility colors, not airflow diagnostics.</div>
+<div class="note">Regional DEM elevation, not LiDAR. Particle colors are for visibility, not airflow diagnostics.</div>
 </div>
 </div>
 </div>
@@ -202,7 +216,14 @@ const names=[
 ];
 const norm=n=>(n%360+360)%360;
 const cardinal=n=>names[Math.round(norm(n)/22.5)%16];
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
+let area=HOME.slice();
+let propertyStand=HOME.slice();
+let navigationToken=0;
+let prefer3D=false;
+let searchToken=0;
+let searchController=null;
 let bearing=315;
 let stand=HOME.slice();
 let gps=null;
@@ -222,9 +243,7 @@ function status(s){
  clearTimeout(statusTimer);
  el("status").textContent=s;
  el("status").classList.remove("hidden");
- statusTimer=setTimeout(()=>{
-  el("status").classList.add("hidden");
- },4000);
+ statusTimer=setTimeout(()=>el("status").classList.add("hidden"),4000);
 }
 
 function loadScript(src){
@@ -312,19 +331,20 @@ function setStand(p){
 /* 2D SATELLITE */
 
 async function start2D(){
+ const id=token;
  try{
   if(!window.L){
    loadCSS("https://unpkg.com/leaflet@1.9.4/dist/leaflet.css");
    await loadScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js");
   }
-  if(mode==="3d")return;
-  if(map){
-   map.remove();
-   map=null;
-  }
+  if(id!==token||mode==="3d")return;
+  if(map){map.remove();map=null;}
 
+  gpsMarker=null;
+  standMarker=null;
+  plume=null;
   el("map").innerHTML="";
-  map=L.map(el("map"),{zoomControl:false}).setView(HOME,15);
+  map=L.map(el("map"),{zoomControl:false}).setView(area,15);
 
   L.tileLayer(SAT+"{z}/{y}/{x}",{
    maxZoom:19,attribution:"© Esri"
@@ -352,7 +372,6 @@ async function start2D(){
   });
 
   if(gps)gpsMarker=circle(gps,"#3b82f6",8);
-
   map.on("click",e=>{
    if(!placing)return;
    placing=false;
@@ -361,10 +380,10 @@ async function start2D(){
 
   mode="2d";
   refresh();
-  status("V7.7 · 2D satellite ready");
+  status("2D satellite ready");
   setTimeout(()=>{if(map)map.invalidateSize();},300);
  }catch(e){
-  status("2D error: "+e.message);
+  if(id===token)status("2D error: "+e.message);
  }
 }
 
@@ -374,25 +393,16 @@ let T,scene,camera,renderer,host,mesh,geometry;
 let reliefMaterial,satelliteMaterial;
 let shadeMesh,shadeMaterial;
 let markerGroup,fanMesh,fanLine;
-let heights=null;
-let cfg=null;
-let gridW=0,gridH=0;
-let low=0,high=0;
-let worldW=1,worldD=1;
-let exaggeration=3;
-let theta=0;
-let phi=Math.PI/4;
-let distance=3000;
+let heights=null,cfg=null;
+let gridW=0,gridH=0,low=0,high=0;
+let worldW=1,worldD=1,exaggeration=3;
+let theta=0,phi=Math.PI/4,distance=3000;
 let center={x:0,y:0,z:0};
-let frame=null;
-let resizeObserver=null;
-let removeControls=null;
-let preferredView="satellite";
-let imageryReady=false;
+let frame=null,resizeObserver=null,removeControls=null;
+let preferredView="satellite",imageryReady=false;
 
 function tileXY(lat,lon,z){
- const n=2**z;
- const r=lat*Math.PI/180;
+ const n=2**z,r=lat*Math.PI/180;
  return {
   x:(lon+180)/360*n,
   y:(1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*n
@@ -401,11 +411,20 @@ function tileXY(lat,lon,z){
 
 function config(){
  const z=13;
- const a=tileXY(32.615,-86.630,z);
- const b=tileXY(32.597,-86.603,z);
- const x=Math.floor(a.x);
- const y=Math.floor(a.y);
- return {z,x,y,nx:Math.ceil(b.x)-x,ny:Math.ceil(b.y)-y,satZ:16};
+ if(Math.abs(area[0]-HOME[0])<.0001&&Math.abs(area[1]-HOME[1])<.0001){
+  const a=tileXY(32.615,-86.630,z);
+  const b=tileXY(32.597,-86.603,z);
+  const x=Math.floor(a.x),y=Math.floor(a.y);
+  return {z,x,y,nx:Math.ceil(b.x)-x,ny:Math.ceil(b.y)-y,satZ:16};
+ }
+ const t=tileXY(area[0],area[1],z);
+ const n=2**z;
+ return {
+  z,
+  x:clamp(Math.round(t.x)-1,0,n-2),
+  y:clamp(Math.round(t.y)-1,0,n-2),
+  nx:2,ny:2,satZ:16
+ };
 }
 
 async function imageBitmap(url){
@@ -416,11 +435,10 @@ async function imageBitmap(url){
 
 function sample(x,y){
  if(!heights)return 0;
- x=Math.max(0,Math.min(gridW-1,x));
- y=Math.max(0,Math.min(gridH-1,y));
+ x=clamp(x,0,gridW-1);
+ y=clamp(y,0,gridH-1);
  const x0=Math.floor(x),y0=Math.floor(y);
- const x1=Math.min(gridW-1,x0+1);
- const y1=Math.min(gridH-1,y0+1);
+ const x1=Math.min(gridW-1,x0+1),y1=Math.min(gridH-1,y0+1);
  const a=x-x0,b=y-y0;
  return (
   heights[y0*gridW+x0]*(1-a)*(1-b)+
@@ -432,11 +450,9 @@ function sample(x,y){
 
 function worldPoint(p){
  const t=tileXY(p[0],p[1],cfg.z);
- const fx=(t.x-cfg.x)/cfg.nx;
- const fy=(t.y-cfg.y)/cfg.ny;
+ const fx=(t.x-cfg.x)/cfg.nx,fy=(t.y-cfg.y)/cfg.ny;
  return {
-  x:(fx-.5)*worldW,
-  z:(fy-.5)*worldD,
+  x:(fx-.5)*worldW,z:(fy-.5)*worldD,
   inside:fx>=0&&fx<=1&&fy>=0&&fy<=1
  };
 }
@@ -455,8 +471,8 @@ function insideTerrain(x,z){
 
 function updateCamera(){
  if(!camera)return;
- phi=Math.max(.025,Math.min(1.55,phi));
- distance=Math.max(60,Math.min(150000,distance));
+ phi=clamp(phi,.025,1.55);
+ distance=clamp(distance,60,150000);
  camera.position.set(
   center.x+distance*Math.sin(phi)*Math.sin(theta),
   center.y+distance*Math.cos(phi),
@@ -486,7 +502,6 @@ function updateMarkers(){
   [stand,0xffdc20,1.35]
  ];
  if(gps)points.push([gps,0x3b82f6,1]);
-
  for(const [p,color,size] of points){
   const q=worldPoint(p);
   if(!q.inside)continue;
@@ -514,9 +529,7 @@ function clearFan(){
 function updateFan(){
  if(!scene||!heights||!cfg)return;
  clearFan();
- if(+el("speed").value===0)return;
- if(!worldPoint(stand).inside)return;
-
+ if(+el("speed").value===0||!worldPoint(stand).inside)return;
  const f=fanSettings();
  const angular=64,radial=32;
  const vertices=[],indices=[];
@@ -544,7 +557,6 @@ function updateFan(){
  g.setAttribute("position",new T.Float32BufferAttribute(vertices,3));
  g.setIndex(indices);
  g.computeVertexNormals();
-
  fanMesh=new T.Mesh(g,new T.MeshBasicMaterial({
   color:0xffe132,transparent:true,opacity:.34,
   depthWrite:false,side:T.DoubleSide
@@ -583,7 +595,6 @@ function buildShade(){
   shadeMaterial.dispose();
   shadeMesh=null;
  }
-
  const nx=geometry.parameters.widthSegments;
  const ny=geometry.parameters.heightSegments;
  const cv=document.createElement("canvas");
@@ -601,19 +612,15 @@ function buildShade(){
    const hz=(sample(px,py+1)-sample(px,py-1))*exaggeration/
     Math.max(1,2*worldD/(gridH-1));
    const n=new T.Vector3(-hx,1,-hz).normalize();
-   const shade=Math.round(210*(1-Math.max(0,n.dot(sun))));
    const k=(y*(nx+1)+x)*4;
-   img.data[k]=0;
-   img.data[k+1]=0;
-   img.data[k+2]=0;
-   img.data[k+3]=shade;
+   img.data[k]=img.data[k+1]=img.data[k+2]=0;
+   img.data[k+3]=Math.round(210*(1-Math.max(0,n.dot(sun))));
   }
  }
 
  c.putImageData(img,0,0);
  const tex=new T.CanvasTexture(cv);
  tex.colorSpace=T.SRGBColorSpace;
-
  shadeMaterial=new T.MeshBasicMaterial({
   map:tex,transparent:true,opacity:+el("shade").value/100,
   depthWrite:false,polygonOffset:true,
@@ -631,7 +638,6 @@ function applyView(){
  mesh.material=sat?satelliteMaterial:reliefMaterial;
  mesh.material.needsUpdate=true;
  if(shadeMesh)shadeMesh.visible=sat&&+el("shade").value>0;
-
  el("terrainInfo").textContent=
   "Elevation "+Math.round(low*3.28084)+"–"+
   Math.round(high*3.28084)+" ft · "+exaggeration+"× · "+
@@ -642,16 +648,13 @@ function applyView(){
 
 function setView(view){
  preferredView=view;
- if(mode!=="3d"){
-  status("Enable 3D to change terrain view");
-  return;
- }
+ if(mode!=="3d"){status("Enable 3D to change terrain view");return;}
  applyView();
- if(view==="satellite"&&!imageryReady){
-  status("Satellite imagery still loading");
- }else{
-  status(view==="satellite"?"3D satellite restored":"3D relief active");
- }
+ status(
+  view==="satellite"&&!imageryReady?
+  "Satellite imagery still loading":
+  view==="satellite"?"3D satellite restored":"3D relief active"
+ );
 }
 
 function updateTerrain(){
@@ -659,14 +662,12 @@ function updateTerrain(){
  const p=geometry.attributes.position;
  const nx=geometry.parameters.widthSegments;
  const ny=geometry.parameters.heightSegments;
-
  for(let y=0;y<=ny;y++){
   for(let x=0;x<=nx;x++){
    const h=sample(x/nx*(gridW-1),y/ny*(gridH-1));
    p.setY(y*(nx+1)+x,(h-(low+high)/2)*exaggeration);
   }
  }
-
  p.needsUpdate=true;
  geometry.computeVertexNormals();
  updateMarkers();
@@ -702,7 +703,6 @@ let eddyCenters=[];
 let flowGrid=null;
 const FLOW_N=81;
 let windClock=0;
-const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
 function rawGround(x,z){
  return sample(
@@ -730,9 +730,7 @@ function ridgeFeatures(x,z){
   !insideTerrain(x+b.dx*far,z+b.dz*far)||
   !insideTerrain(x-cx*step,z-cz*step)||
   !insideTerrain(x+cx*step,z+cz*step)
- ){
-  return {rise:0,crest:0,lee:0,cross:0};
- }
+ )return {rise:0,crest:0,lee:0,cross:0};
 
  return {
   rise:clamp(Math.max(0,(down-up)/(2*step))*5,0,1)*user,
@@ -751,8 +749,7 @@ function updateEddyInfo(){
    "Terrain effects off · original straight-line wind active.";
  }else{
   el("eddyInfo").textContent=
-   "Windward lift + crest disturbance + "+
-   eddyCenters.length+
+   "Windward lift + crest disturbance + "+eddyCenters.length+
    " potential leeward zones · experimental.";
  }
 }
@@ -760,7 +757,6 @@ function updateEddyInfo(){
 function buildEddies(){
  eddyCenters=[];
  flowGrid=null;
-
  if(!heights||mode!=="3d"||el("eddies").value!=="on"){
   updateEddyInfo();
   reset3DParticles();
@@ -782,50 +778,35 @@ function buildEddies(){
    const farUp=rawGround(x-b.dx*far,z-b.dz*far);
    const farDown=rawGround(x+b.dx*far,z+b.dz*far);
    const pocket=Math.max(0,(farUp+farDown)/2-h);
-
    const score=
     Math.max(0,farUp-h)*.7+
-    Math.max(0,up-down)*.8+
-    pocket*.32+
+    Math.max(0,up-down)*.8+pocket*.32+
     Math.max(0,(farUp-farDown)/(2*far))*75;
-
    if(score<7)continue;
-
    const cx=-b.dz,cz=b.dx;
-   const cross=
-    rawGround(x+cx*far,z+cz*far)-
-    rawGround(x-cx*far,z-cz*far);
-
+   const cross=rawGround(x+cx*far,z+cz*far)-rawGround(x-cx*far,z-cz*far);
    candidates.push({
-    x,z,score,
-    side:cross>=0?1:-1,
-    radius:clamp(
-     spacing*(1.25+score/30),
-     spacing*1.1,spacing*3
-    ),
+    x,z,score,side:cross>=0?1:-1,
+    radius:clamp(spacing*(1.25+score/30),spacing*1.1,spacing*3),
     strength:clamp(score/25,.2,1)
    });
   }
  }
 
  candidates.sort((a,b)=>b.score-a.score);
-
  for(const e of candidates){
   if(eddyCenters.length>=18)break;
-  const crowded=eddyCenters.some(p=>
-   Math.hypot(e.x-p.x,e.z-p.z)<
-   Math.max(e.radius,p.radius)*1.3
-  );
-  if(!crowded)eddyCenters.push(e);
+  if(eddyCenters.some(p=>
+   Math.hypot(e.x-p.x,e.z-p.z)<Math.max(e.radius,p.radius)*1.3
+  ))continue;
+  eddyCenters.push(e);
  }
-
  buildFlowGrid();
  reset3DParticles();
 }
 
 function eddyVector(x,z){
- const b=windVector();
- const f=ridgeFeatures(x,z);
+ const b=windVector(),f=ridgeFeatures(x,z);
  const turn=-f.cross*.6;
  const speedup=1+f.rise*.2+f.crest*.3-f.lee*.28;
  const c=Math.cos(turn),s=Math.sin(turn);
@@ -834,42 +815,26 @@ function eddyVector(x,z){
  const user=+el("eddyStrength").value/100;
 
  for(const e of eddyCenters){
-  const rx=(x-e.x)/e.radius;
-  const rz=(z-e.z)/e.radius;
+  const rx=(x-e.x)/e.radius,rz=(z-e.z)/e.radius;
   const q2=rx*rx+rz*rz;
   if(q2>=2.56)continue;
-
   const power=user*e.strength;
   const local=power*Math.exp(-2.2*q2);
   const swirl=power*3.6*Math.exp(-1.7*q2);
-
   vx*=1-local*.9;
   vz*=1-local*.9;
   vx+=-rz*e.side*swirl-rx*local*.12;
-  vz+= rx*e.side*swirl-rz*local*.12;
+  vz+=rx*e.side*swirl-rz*local*.12;
  }
-
  const magnitude=Math.hypot(vx,vz);
- if(magnitude>2.2){
-  vx*=2.2/magnitude;
-  vz*=2.2/magnitude;
- }
-
+ if(magnitude>2.2){vx*=2.2/magnitude;vz*=2.2/magnitude;}
  return {vx,vz,rise:f.rise,crest:f.crest,lee:f.lee};
 }
 
-/* Cache terrain features and the main flow field. */
-
 function buildFlowGrid(){
  flowGrid=null;
-
- if(
-  heights&&mode==="3d"&&
-  el("eddies").value==="on"&&
-  +el("eddyStrength").value>0
- ){
+ if(heights&&mode==="3d"&&el("eddies").value==="on"&&+el("eddyStrength").value>0){
   flowGrid=new Float32Array(FLOW_N*FLOW_N*5);
-
   for(let j=0;j<FLOW_N;j++){
    for(let i=0;i<FLOW_N;i++){
     const f=eddyVector(
@@ -890,42 +855,28 @@ function buildFlowGrid(){
 
 function flowAt(x,z){
  const base=windVector();
- if(!flowGrid){
-  return {vx:base.dx,vz:base.dz,rise:0,crest:0,lee:0};
- }
-
+ if(!flowGrid)return {vx:base.dx,vz:base.dz,rise:0,crest:0,lee:0};
  const gx=clamp((x/worldW+.5)*(FLOW_N-1),0,FLOW_N-1);
  const gz=clamp((z/worldD+.5)*(FLOW_N-1),0,FLOW_N-1);
  const ix=Math.floor(gx),iz=Math.floor(gz);
- const jx=Math.min(ix+1,FLOW_N-1);
- const jz=Math.min(iz+1,FLOW_N-1);
+ const jx=Math.min(ix+1,FLOW_N-1),jz=Math.min(iz+1,FLOW_N-1);
  const a=gx-ix,b=gz-iz;
- const k00=(iz*FLOW_N+ix)*5;
- const k10=(iz*FLOW_N+jx)*5;
- const k01=(jz*FLOW_N+ix)*5;
- const k11=(jz*FLOW_N+jx)*5;
-
+ const k00=(iz*FLOW_N+ix)*5,k10=(iz*FLOW_N+jx)*5;
+ const k01=(jz*FLOW_N+ix)*5,k11=(jz*FLOW_N+jx)*5;
  const blend=c=>
-  flowGrid[k00+c]*(1-a)*(1-b)+
-  flowGrid[k10+c]*a*(1-b)+
-  flowGrid[k01+c]*(1-a)*b+
-  flowGrid[k11+c]*a*b;
+  flowGrid[k00+c]*(1-a)*(1-b)+flowGrid[k10+c]*a*(1-b)+
+  flowGrid[k01+c]*(1-a)*b+flowGrid[k11+c]*a*b;
 
  const rise=blend(2),crest=blend(3),lee=blend(4);
  const rough=rise*.07+crest*.25+lee*.45;
- const wave=
-  Math.sin(x/75+z/110-windClock*.9)*
+ const wave=Math.sin(x/75+z/110-windClock*.9)*
   Math.cos(z/90-x/140+windClock*.6);
  const pulse=Math.sin(x/125-z/95+windClock*.7);
-
- const vx=
-  blend(0)-base.dz*rough*wave+
-  base.dx*rough*pulse*.15;
- const vz=
-  blend(1)+base.dx*rough*wave+
-  base.dz*rough*pulse*.15;
-
- return {vx,vz,rise,crest,lee};
+ return {
+  vx:blend(0)-base.dz*rough*wave+base.dx*rough*pulse*.15,
+  vz:blend(1)+base.dx*rough*wave+base.dz*rough*pulse*.15,
+  rise,crest,lee
+ };
 }
 
 /* WIND PARTICLES */
@@ -937,27 +888,22 @@ const particles=Array.from({length:MAX_PARTICLES},()=>({
 }));
 const canvas=el("canvas");
 const ctx=canvas.getContext("2d");
-let lastWindTime=0;
-let lastWindMode="none";
+let lastWindTime=0,lastWindMode="none";
 
 function reset3DParticles(){
  for(const p of particles)p.valid=false;
 }
 
 function canvasSize(){
- const width=root.clientWidth;
- const height=root.clientHeight;
+ const width=root.clientWidth,height=root.clientHeight;
  const ratio=Math.min(window.devicePixelRatio||1,2);
- const cw=Math.round(width*ratio);
- const ch=Math.round(height*ratio);
-
+ const cw=Math.round(width*ratio),ch=Math.round(height*ratio);
  if(canvas.width!==cw||canvas.height!==ch){
   canvas.width=cw;
   canvas.height=ch;
   canvas.style.width=width+"px";
   canvas.style.height=height+"px";
  }
-
  ctx.setTransform(ratio,0,0,ratio,0,0);
  return {width,height};
 }
@@ -970,57 +916,40 @@ function windColors(index=0){
     ["#ffd45c","#241808"],
     ["#ff6565","#260707"]
    ][index%3];
-  case "cyan":
-   return ["#65F6FF","#071b22"];
-  case "magenta":
-   return ["#FF35D4","#ffffff"];
-  default:
-   return ["#FFFFFF","#080b0e"];
+  case "cyan":return ["#65F6FF","#071b22"];
+  case "magenta":return ["#FF35D4","#ffffff"];
+  default:return ["#FFFFFF","#080b0e"];
  }
 }
 
 function drawStreak(x,y,dx,dy,length,colors){
  ctx.lineCap="round";
  ctx.lineJoin="round";
- ctx.beginPath();
- ctx.moveTo(x,y);
- ctx.lineTo(x-dx*length,y-dy*length);
- ctx.strokeStyle=colors[1];
- ctx.lineWidth=2.5;
- ctx.stroke();
- ctx.beginPath();
- ctx.moveTo(x,y);
- ctx.lineTo(x-dx*length,y-dy*length);
- ctx.strokeStyle=colors[0];
- ctx.lineWidth=1.4;
- ctx.stroke();
+ for(let pass=0;pass<2;pass++){
+  ctx.beginPath();
+  ctx.moveTo(x,y);
+  ctx.lineTo(x-dx*length,y-dy*length);
+  ctx.strokeStyle=pass===0?colors[1]:colors[0];
+  ctx.lineWidth=pass===0?2.5:1.4;
+  ctx.stroke();
+ }
 }
-
-/* 2D WIND */
 
 function draw2DWind(dt,s,speed,motion,count,colors){
  const a=norm(bearing+180)*Math.PI/180;
  const dx=Math.sin(a),dy=-Math.cos(a);
  const length=6+Math.min(4,speed/7.5);
-
  for(let i=0;i<count;i++){
   const p=particles[i];
   p.x+=dx*speed*dt*motion*p.factor/35;
   p.y+=dy*speed*dt*motion*p.factor/35;
-
   if(p.x>1.03)p.x=-.03;
   if(p.x<-.03)p.x=1.03;
   if(p.y>1.03)p.y=-.03;
   if(p.y<-.03)p.y=1.03;
-
-  drawStreak(
-   p.x*s.width,p.y*s.height,
-   dx,dy,length,windColors(i)
-  );
+  drawStreak(p.x*s.width,p.y*s.height,dx,dy,length,windColors(i));
  }
 }
-
-/* 3D WIND */
 
 function windVector(){
  const a=norm(bearing+180)*Math.PI/180;
@@ -1031,33 +960,19 @@ function projectTerrain(x,z,s){
  if(!insideTerrain(x,z))return null;
  const lift=Math.max(1.8,worldW/2800);
  let airLift=0;
-
  if(flowGrid){
   const f=flowAt(x,z);
   const wave=Math.sin(x/85-z/115+windClock*.85);
   const speedFactor=clamp(+el("speed").value/8,0,1.5);
-
-  /* Illustrative lift above terrain, not solved vertical velocity. */
   airLift=(
-   f.rise*9+
-   f.crest*(10+wave*4)+
-   f.lee*(8+wave*6)
+   f.rise*9+f.crest*(10+wave*4)+f.lee*(8+wave*6)
   )*exaggeration*speedFactor;
  }
-
  const v=new T.Vector3(x,ground(x,z)+lift+airLift,z);
  v.project(camera);
-
- if(
-  !Number.isFinite(v.x)||!Number.isFinite(v.y)||
-  !Number.isFinite(v.z)||v.z< -1||v.z>1
- )return null;
-
- return {
-  x:(v.x+1)*s.width*.5,
-  y:(1-v.y)*s.height*.5,
-  depth:v.z
- };
+ if(!Number.isFinite(v.x)||!Number.isFinite(v.y)||
+    !Number.isFinite(v.z)||v.z< -1||v.z>1)return null;
+ return {x:(v.x+1)*s.width*.5,y:(1-v.y)*s.height*.5,depth:v.z};
 }
 
 function terrainFromScreen(sx,sy,s){
@@ -1065,12 +980,9 @@ function terrainFromScreen(sx,sy,s){
  const mouse=new T.Vector2(sx/s.width*2-1,1-sy/s.height*2);
  const ray=new T.Raycaster();
  ray.setFromCamera(mouse,camera);
- const origin=ray.ray.origin;
- const dir=ray.ray.direction;
-
+ const origin=ray.ray.origin,dir=ray.ray.direction;
  if(Math.abs(dir.y)<.00001)return null;
  let elevation=0,x=0,z=0;
-
  for(let i=0;i<6;i++){
   const t=(elevation-origin.y)/dir.y;
   if(t<=0)return null;
@@ -1085,18 +997,10 @@ function terrainFromScreen(sx,sy,s){
 function spawn3DParticle(p,s){
  p.valid=false;
  for(let tries=0;tries<18;tries++){
-  const sx=Math.random()*s.width;
-  const sy=Math.random()*s.height;
-  const q=terrainFromScreen(sx,sy,s);
+  const q=terrainFromScreen(Math.random()*s.width,Math.random()*s.height,s);
   if(!q)continue;
   const check=projectTerrain(q.x,q.z,s);
-  if(!check)continue;
-
-  if(
-   check.x<0||check.x>s.width||
-   check.y<0||check.y>s.height
-  )continue;
-
+  if(!check||check.x<0||check.x>s.width||check.y<0||check.y>s.height)continue;
   p.wx=q.x;
   p.wz=q.z;
   p.valid=true;
@@ -1107,27 +1011,22 @@ function spawn3DParticle(p,s){
 function pixelScale(x,z,dx,dz,s){
  const a=projectTerrain(x,z,s);
  if(!a)return null;
- const test=10;
- const b=projectTerrain(x+dx*test,z+dz*test,s);
+ const b=projectTerrain(x+dx*10,z+dz*10,s);
  if(!b)return null;
- const px=Math.hypot(b.x-a.x,b.y-a.y)/test;
+ const px=Math.hypot(b.x-a.x,b.y-a.y)/10;
  if(!Number.isFinite(px)||px<.00001)return null;
  return {pxPerMeter:px,screen:a};
 }
 
 function draw3DTerrainStreak(x,z,dx,dz,lengthMeters,s,colors){
- const pieces=5;
- const pts=[];
+ const pieces=5,pts=[];
  let px=x,pz=z;
-
  for(let j=0;j<=pieces;j++){
   const q=projectTerrain(px,pz,s);
   if(!q)return;
   pts.push(q);
-
   if(flowGrid){
-   const f=flowAt(px,pz);
-   const m=Math.hypot(f.vx,f.vz);
+   const f=flowAt(px,pz),m=Math.hypot(f.vx,f.vz);
    if(m<.015)return;
    px-=f.vx/m*lengthMeters/pieces;
    pz-=f.vz/m*lengthMeters/pieces;
@@ -1136,16 +1035,13 @@ function draw3DTerrainStreak(x,z,dx,dz,lengthMeters,s,colors){
    pz=z-dz*lengthMeters*(j+1)/pieces;
   }
  }
-
  ctx.lineCap="round";
  ctx.lineJoin="round";
-
  for(let pass=0;pass<2;pass++){
   ctx.beginPath();
   for(let j=0;j<pts.length;j++){
-   const q=pts[j];
-   if(j===0)ctx.moveTo(q.x,q.y);
-   else ctx.lineTo(q.x,q.y);
+   if(j===0)ctx.moveTo(pts[j].x,pts[j].y);
+   else ctx.lineTo(pts[j].x,pts[j].y);
   }
   ctx.strokeStyle=pass===0?colors[1]:colors[0];
   ctx.lineWidth=pass===0?2.5:1.4;
@@ -1157,54 +1053,30 @@ function draw3DWind(dt,s,speed,motion,count,colors){
  if(!camera||!heights)return;
  const pixelLength=6+Math.min(4,speed/7.5);
  const desiredPixelsPerSecond=speed*motion*s.width/35;
-
  for(let i=0;i<count;i++){
   const p=particles[i];
-  if(!p.valid){
-   spawn3DParticle(p,s);
-   if(!p.valid)continue;
-  }
-
+  if(!p.valid){spawn3DParticle(p,s);if(!p.valid)continue;}
   const f=flowAt(p.wx,p.wz);
   const magnitude=Math.hypot(f.vx,f.vz);
-
-  if(magnitude<.015){
-   spawn3DParticle(p,s);
-   continue;
-  }
-
+  if(magnitude<.015){spawn3DParticle(p,s);continue;}
   const dx=f.vx/magnitude,dz=f.vz/magnitude;
   const scale=pixelScale(p.wx,p.wz,dx,dz,s);
-
-  if(!scale){
-   spawn3DParticle(p,s);
-   continue;
-  }
+  if(!scale){spawn3DParticle(p,s);continue;}
 
   let step=Math.min(
-   Math.max(
-    0,desiredPixelsPerSecond/scale.pxPerMeter*dt*p.factor
-   ),
+   Math.max(0,desiredPixelsPerSecond/scale.pxPerMeter*dt*p.factor),
    Math.max(worldW,worldD)*.08
   );
-
   if(flowGrid){
    const limit=eddyCenters.length?
     Math.min(...eddyCenters.map(e=>e.radius))/12:
     Math.min(worldW,worldD)/100;
-
-   const steps=Math.min(
-    16,Math.max(1,Math.ceil(step*2.2/limit))
-   );
+   const steps=Math.min(16,Math.max(1,Math.ceil(step*2.2/limit)));
    step=Math.min(step,steps*limit/2.2);
    const h=step/steps;
-
    for(let j=0;j<steps;j++){
     const a=flowAt(p.wx,p.wz);
-    const mid=flowAt(
-     p.wx+a.vx*h*.5,
-     p.wz+a.vz*h*.5
-    );
+    const mid=flowAt(p.wx+a.vx*h*.5,p.wz+a.vz*h*.5);
     p.wx+=mid.vx*h;
     p.wz+=mid.vz*h;
     if(!insideTerrain(p.wx,p.wz))break;
@@ -1214,64 +1086,42 @@ function draw3DWind(dt,s,speed,motion,count,colors){
    p.wz+=f.vz*step;
   }
 
-  if(!insideTerrain(p.wx,p.wz)){
-   spawn3DParticle(p,s);
-   continue;
-  }
-
+  if(!insideTerrain(p.wx,p.wz)){spawn3DParticle(p,s);continue;}
   const head=projectTerrain(p.wx,p.wz,s);
-  if(
-   !head||head.x< -15||head.x>s.width+15||
-   head.y< -15||head.y>s.height+15
-  ){
+  if(!head||head.x< -15||head.x>s.width+15||head.y< -15||head.y>s.height+15){
    spawn3DParticle(p,s);
    continue;
   }
-
-  const current=flowAt(p.wx,p.wz);
-  const m=Math.hypot(current.vx,current.vz);
+  const current=flowAt(p.wx,p.wz),m=Math.hypot(current.vx,current.vz);
   if(m<.015)continue;
   const ux=current.vx/m,uz=current.vz/m;
   const currentScale=pixelScale(p.wx,p.wz,ux,uz,s);
   if(!currentScale)continue;
-
   const lengthMeters=Math.min(
    pixelLength/currentScale.pxPerMeter,
    Math.max(worldW,worldD)*.04
   );
-
-  draw3DTerrainStreak(
-   p.wx,p.wz,ux,uz,lengthMeters,s,windColors(i)
-  );
+  draw3DTerrainStreak(p.wx,p.wz,ux,uz,lengthMeters,s,windColors(i));
  }
 }
 
 function drawWind(time){
  const s=canvasSize();
  ctx.clearRect(0,0,s.width,s.height);
- const dt=Math.min(
-  Math.max(0,(time-lastWindTime||16)/1000),.05
- );
+ const dt=Math.min(Math.max(0,(time-lastWindTime||16)/1000),.05);
  lastWindTime=time;
-
  if(mode!==lastWindMode){
   if(mode==="3d")reset3DParticles();
   lastWindMode=mode;
  }
-
  if(!animation||mode==="none")return;
  const speed=+el("speed").value;
  if(speed<=0)return;
- const motion=+el("motion").value;
- const count=+el("density").value;
+ const motion=+el("motion").value,count=+el("density").value;
  const colors=windColors();
  windClock+=dt;
-
- if(mode==="2d"){
-  draw2DWind(dt,s,speed,motion,count,colors);
- }else if(mode==="3d"){
-  draw3DWind(dt,s,speed,motion,count,colors);
- }
+ if(mode==="2d")draw2DWind(dt,s,speed,motion,count,colors);
+ else if(mode==="3d")draw3DWind(dt,s,speed,motion,count,colors);
 }
 
 function windLoop(time){
@@ -1283,8 +1133,7 @@ requestAnimationFrame(windLoop);
 /* 3D CAMERA CONTROLS */
 
 function controls(){
- const c=renderer.domElement;
- const pointers=new Map();
+ const c=renderer.domElement,pointers=new Map();
  let last=null,pinch=null,down=null;
  let movingStand=false,moved=false;
 
@@ -1295,24 +1144,17 @@ function controls(){
   last=null;
   pinch=null;
   moved=false;
-
   if(dragging&&!placing&&pointers.size===1){
-   const p=terrainHit(e);
-   const q=worldPoint(stand);
+   const p=terrainHit(e),q=worldPoint(stand);
    movingStand=!!p&&Math.hypot(p.x-q.x,p.z-q.z)<worldW/55;
   }
  }
 
  function pm(e){
   if(!pointers.has(e.pointerId))return;
-
-  if(down&&Math.hypot(e.clientX-down.x,e.clientY-down.y)>8){
-   moved=true;
-  }
-
+  if(down&&Math.hypot(e.clientX-down.x,e.clientY-down.y)>8)moved=true;
   pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
   const ps=[...pointers.values()];
-
   if(ps.length===1){
    if(movingStand){
     const p=terrainHit(e);
@@ -1337,10 +1179,7 @@ function controls(){
  function pu(e){
   if(!moved&&placing&&pointers.size===1){
    const p=terrainHit(e);
-   if(p){
-    placing=false;
-    setStand(worldToGeo(p.x,p.z));
-   }
+   if(p){placing=false;setStand(worldToGeo(p.x,p.z));}
   }
   pointers.delete(e.pointerId);
   last=null;
@@ -1360,7 +1199,6 @@ function controls(){
  c.addEventListener("pointerup",pu);
  c.addEventListener("pointercancel",pu);
  c.addEventListener("wheel",wh,{passive:false});
-
  removeControls=()=>{
   c.removeEventListener("pointerdown",pd);
   c.removeEventListener("pointermove",pm);
@@ -1379,105 +1217,83 @@ function render3D(){
 /* TERRAIN DOWNLOAD */
 
 async function loadElevation(id){
- const c=config();
- const width=c.nx*256,height=c.ny*256;
+ const c=config(),width=c.nx*256,height=c.ny*256;
  const cv=document.createElement("canvas");
  cv.width=width;
  cv.height=height;
  const context=cv.getContext("2d",{willReadFrequently:true});
  const jobs=[];
-
  for(let y=0;y<c.ny;y++){
   for(let x=0;x<c.nx;x++){
    jobs.push((async()=>{
-    const bmp=await imageBitmap(
-     DEM+c.z+"/"+(c.x+x)+"/"+(c.y+y)+".png"
-    );
+    const bmp=await imageBitmap(DEM+c.z+"/"+(c.x+x)+"/"+(c.y+y)+".png");
     if(id===token)context.drawImage(bmp,x*256,y*256);
     bmp.close();
    })());
   }
  }
-
  await Promise.all(jobs);
  if(id!==token)return null;
  const pixels=context.getImageData(0,0,width,height).data;
  const arr=new Float32Array(width*height);
  let min=Infinity,max=-Infinity;
-
  for(let i=0;i<arr.length;i++){
-  const k=i*4;
-  const v=pixels[k]*256+pixels[k+1]+pixels[k+2]/256-32768;
+  const k=i*4,v=pixels[k]*256+pixels[k+1]+pixels[k+2]/256-32768;
   arr[i]=v;
   min=Math.min(min,v);
   max=Math.max(max,v);
  }
-
  if(max-min<.01)throw Error("Elevation data empty");
  return {c,width,height,arr,min,max};
 }
 
 async function loadImagery(id,c){
  const scale=2**(c.satZ-c.z);
- const cols=c.nx*scale,rows=c.ny*scale;
- const total=cols*rows;
+ const cols=c.nx*scale,rows=c.ny*scale,total=cols*rows;
  const cv=document.createElement("canvas");
  cv.width=cols*256;
  cv.height=rows*256;
- const context=cv.getContext("2d");
- const queue=[];
-
+ const context=cv.getContext("2d"),queue=[];
  for(let y=0;y<rows;y++){
   for(let x=0;x<cols;x++)queue.push({x,y});
  }
-
  let loaded=0;
-
  async function worker(){
   while(queue.length&&id===token){
-   const p=queue.shift();
-   const x=c.x*scale+p.x,y=c.y*scale+p.y;
-
+   const p=queue.shift(),x=c.x*scale+p.x,y=c.y*scale+p.y;
    try{
     const bmp=await imageBitmap(SAT+c.satZ+"/"+y+"/"+x);
-    if(id!==token){
-     bmp.close();
-     return;
-    }
+    if(id!==token){bmp.close();return;}
     context.drawImage(bmp,p.x*256,p.y*256);
     bmp.close();
     loaded++;
    }catch(e){}
   }
  }
-
  await Promise.all(Array.from({length:Math.min(8,total)},worker));
  if(id!==token||!loaded)return null;
  return {cv,loaded,total};
 }
 
-/* START 3D */
-
 async function start3D(){
- if(mode==="3d"){
-  status("3D already active");
-  return;
- }
+ prefer3D=true;
+ if(mode==="3d"){status("3D already active");return;}
  if(busy)return;
+ if(map&&mode==="2d"){
+  const p=map.getCenter();
+  area=[p.lat,p.lng];
+ }
  busy=true;
  const id=++token;
  status("Loading terrain elevation…");
 
  try{
   if(!window.THREE){
-   await loadScript(
-    "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.1/three.min.js"
-   );
+   await loadScript("https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.1/three.min.js");
   }
   if(id!==token)return;
   T=window.THREE;
   if(!T)throw Error("Three.js unavailable");
-
   const data=await loadElevation(id);
   if(!data||id!==token)return;
 
@@ -1488,27 +1304,21 @@ async function start3D(){
   low=data.min;
   high=data.max;
   exaggeration=+el("height").value;
-
   const meters=2*Math.PI*6378137/(2**cfg.z);
-  const cosine=Math.cos(HOME[0]*Math.PI/180);
+  const cosine=Math.cos(area[0]*Math.PI/180);
   worldW=cfg.nx*meters*cosine;
   worldD=cfg.ny*meters*cosine;
 
   host=document.createElement("div");
   host.className="three";
   el("map").appendChild(host);
-
   scene=new T.Scene();
   scene.background=new T.Color("#24372f");
   camera=new T.PerspectiveCamera(
-   48,
-   Math.max(1,host.clientWidth)/Math.max(1,host.clientHeight),
+   48,Math.max(1,host.clientWidth)/Math.max(1,host.clientHeight),
    1,1000000
   );
-
-  renderer=new T.WebGLRenderer({
-   antialias:true,powerPreference:"high-performance"
-  });
+  renderer=new T.WebGLRenderer({antialias:true,powerPreference:"high-performance"});
   renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
   renderer.setSize(host.clientWidth,host.clientHeight);
   renderer.outputColorSpace=T.SRGBColorSpace;
@@ -1522,10 +1332,8 @@ async function start3D(){
   reliefMaterial=new T.MeshStandardMaterial({
    color:0xaac8a0,roughness:1,side:T.DoubleSide
   });
-
   geometry=new T.PlaneGeometry(
-   worldW,worldD,
-   Math.min(gridW-1,256),Math.min(gridH-1,256)
+   worldW,worldD,Math.min(gridW-1,256),Math.min(gridH-1,256)
   );
   geometry.rotateX(-Math.PI/2);
   mesh=new T.Mesh(geometry,reliefMaterial);
@@ -1533,7 +1341,7 @@ async function start3D(){
   markerGroup=new T.Group();
   scene.add(markerGroup);
 
-  const q=worldPoint(HOME);
+  const q=worldPoint(area);
   center={x:q.x,y:0,z:q.z};
   theta=0;
   phi=Math.PI/2-(+el("tilt").value)*Math.PI/180;
@@ -1558,11 +1366,7 @@ async function start3D(){
   });
   resizeObserver.observe(host);
 
-  if(map){
-   map.remove();
-   map=null;
-  }
-
+  if(map){map.remove();map=null;}
   mode="3d";
   buildEddies();
   reset3DParticles();
@@ -1571,26 +1375,18 @@ async function start3D(){
 
   const imagery=await loadImagery(id,cfg);
   if(id!==token||mode!=="3d")return;
-
   if(imagery){
    const texture=new T.CanvasTexture(imagery.cv);
    texture.colorSpace=T.SRGBColorSpace;
-   texture.anisotropy=Math.min(
-    8,renderer.capabilities.getMaxAnisotropy()
-   );
+   texture.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());
    texture.needsUpdate=true;
-
    satelliteMaterial=new T.MeshStandardMaterial({
     map:texture,roughness:1,side:T.DoubleSide
    });
    satelliteMaterial.needsUpdate=true;
    imageryReady=true;
    applyView();
-
-   status(
-    "Hill airflow ready · "+imagery.loaded+"/"+imagery.total+
-    " satellite tiles"
-   );
+   status("Hill airflow ready · "+imagery.loaded+"/"+imagery.total+" satellite tiles");
   }else{
    status("3D relief ready · satellite unavailable");
   }
@@ -1607,22 +1403,10 @@ async function start3D(){
  }
 }
 
-/* CLEANUP */
-
 function cleanup3D(){
- if(removeControls){
-  removeControls();
-  removeControls=null;
- }
- if(frame!==null){
-  cancelAnimationFrame(frame);
-  frame=null;
- }
- if(resizeObserver){
-  resizeObserver.disconnect();
-  resizeObserver=null;
- }
-
+ if(removeControls){removeControls();removeControls=null;}
+ if(frame!==null){cancelAnimationFrame(frame);frame=null;}
+ if(resizeObserver){resizeObserver.disconnect();resizeObserver=null;}
  if(scene){
   clearFan();
   clearGroup(markerGroup);
@@ -1633,7 +1417,6 @@ function cleanup3D(){
    shadeMaterial.dispose();
   }
  }
-
  if(geometry)geometry.dispose();
  if(reliefMaterial)reliefMaterial.dispose();
  if(satelliteMaterial){
@@ -1642,7 +1425,6 @@ function cleanup3D(){
  }
  if(renderer)renderer.dispose();
  if(host)host.remove();
-
  renderer=null;
  scene=null;
  camera=null;
@@ -1664,54 +1446,173 @@ function cleanup3D(){
 }
 
 function back2D(){
+ prefer3D=false;
  token++;
  busy=false;
- if(mode==="2d"){
-  status("2D already active");
-  return;
- }
+ if(mode==="2d"){status("2D already active");return;}
  cleanup3D();
  mode="none";
  start2D();
 }
 
 function centerOn(p,zoom){
- if(mode==="2d"&&map)map.setView(p,zoom);
-
+ if(mode==="2d"&&map){
+  area=p.slice();
+  map.setView(p,zoom);
+  return;
+ }
  if(mode==="3d"&&cfg){
   const q=worldPoint(p);
-  if(!q.inside){
-   status("Outside 3D terrain area");
-   return;
-  }
+  if(!q.inside)return goLocation(p,"selected location",false);
   center={x:q.x,y:ground(q.x,q.z),z:q.z};
   updateCamera();
   reset3DParticles();
  }
 }
 
+/* NATIONWIDE SEARCH */
+
+function validCoordinates(p){
+ return p.length===2&&p.every(Number.isFinite)&&
+  Math.abs(p[0])<=85&&Math.abs(p[1])<=180;
+}
+
+function parseCoordinates(text){
+ const m=text.trim().match(/^([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)$/);
+ return m?[Number(m[1]),Number(m[2])]:null;
+}
+
+async function goLocation(p,label,moveStand=true){
+ if(!validCoordinates(p)){status("Invalid coordinates");return;}
+ const nav=++navigationToken;
+ const want3D=prefer3D;
+
+ if(moveStand&&Math.hypot(
+  (stand[0]-HOME[0])*111320,
+  (stand[1]-HOME[1])*94000
+ )<10000){
+  propertyStand=stand.slice();
+ }
+
+ token++;
+ busy=false;
+ if(renderer||host||scene)cleanup3D();
+ mode="none";
+ if(map){map.remove();map=null;}
+ area=p.slice();
+ if(moveStand)stand=p.slice();
+ placing=false;
+
+ await start2D();
+ if(nav!==navigationToken)return;
+ if(want3D)await start3D();
+ if(nav===navigationToken)status("Viewing "+label);
+}
+
+function showSearchResults(results,id){
+ const box=el("searchResults");
+ box.replaceChildren();
+ for(const r of results){
+  const button=document.createElement("button");
+  button.type="button";
+  const label=[r.name,r.admin1,r.admin2].filter(Boolean).join(", ");
+  button.textContent=label;
+  button.style.textAlign="left";
+  button.onclick=async()=>{
+   if(id!==searchToken)return;
+   searchToken++;
+   box.replaceChildren();
+   el("searchInfo").textContent="Selected: "+label;
+   closePanel();
+   await goLocation([r.latitude,r.longitude],label,true);
+  };
+  box.appendChild(button);
+ }
+}
+
+async function searchPlaces(e){
+ e.preventDefault();
+ const text=el("searchInput").value.trim();
+ const id=++searchToken;
+ if(searchController)searchController.abort();
+ el("searchResults").replaceChildren();
+ const coords=parseCoordinates(text);
+
+ if(coords){
+  el("searchButton").disabled=false;
+  if(!validCoordinates(coords)){
+   el("searchInfo").textContent=
+    "Use latitude -85 to 85 and longitude -180 to 180.";
+   return;
+  }
+  el("searchInfo").textContent="Selected coordinates: "+text;
+  closePanel();
+  await goLocation(coords,text,true);
+  return;
+ }
+
+ if(text.length<2){
+  el("searchInfo").textContent=
+   "Enter a town and state, ZIP code, or latitude, longitude.";
+  el("searchButton").disabled=false;
+  return;
+ }
+
+ const controller=new AbortController();
+ searchController=controller;
+ const timeout=setTimeout(()=>controller.abort(),15000);
+ el("searchButton").disabled=true;
+ el("searchInfo").textContent="Searching US places…";
+
+ try{
+  const url=new URL("https://geocoding-api.open-meteo.com/v1/search");
+  url.search=new URLSearchParams({
+   name:text,count:"8",language:"en",countryCode:"US"
+  }).toString();
+
+  const response=await fetch(url,{signal:controller.signal});
+  if(!response.ok)throw Error("Search service returned HTTP "+response.status);
+  const data=await response.json();
+  if(id!==searchToken)return;
+  if(data.error)throw Error(data.reason||"Search failed");
+
+  const results=(data.results||[]).filter(r=>
+   r.country_code==="US"&&validCoordinates([r.latitude,r.longitude])
+  );
+  el("searchInfo").textContent=results.length?
+   "Choose a place below:":
+   "No match. Try a nearby town with its state, ZIP code, or exact coordinates.";
+  showSearchResults(results,id);
+ }catch(error){
+  if(id===searchToken){
+   el("searchInfo").textContent=error.name==="AbortError"?
+    "Search timed out. Try again or enter coordinates.":
+    "Search unavailable: "+error.message;
+  }
+ }finally{
+  clearTimeout(timeout);
+  if(id===searchToken){
+   el("searchButton").disabled=false;
+   searchController=null;
+  }
+ }
+}
+
 /* GPS */
 
 function requestGPS(move){
- if(!navigator.geolocation){
-  status("GPS unavailable");
-  return;
- }
+ if(!navigator.geolocation){status("GPS unavailable");return;}
  status("Requesting GPS…");
-
  navigator.geolocation.getCurrentPosition(
   pos=>{
    gps=[pos.coords.latitude,pos.coords.longitude];
-   el("accuracy").textContent=
-    "GPS accuracy approximately "+
+   el("accuracy").textContent="GPS accuracy approximately "+
     Math.round(pos.coords.accuracy*3.28084)+" feet";
-
    if(mode==="2d"&&map){
     if(gpsMarker)gpsMarker.setLatLng(gps);
     else gpsMarker=circle(gps,"#3b82f6",8);
    }
    if(mode==="3d")updateMarkers();
-
    if(move){
     setStand(gps);
     status("Stand moved to GPS");
@@ -1727,29 +1628,21 @@ function requestGPS(move){
 
 /* UI */
 
+el("searchForm").onsubmit=searchPlaces;
 el("direction").oninput=e=>setBearing(+e.target.value);
 el("minus").onclick=()=>setBearing(bearing-5);
 el("plus").onclick=()=>setBearing(bearing+5);
 el("speed").oninput=refresh;
 el("gustSpeed").oninput=refresh;
 el("spread").onchange=refresh;
-
-el("density").oninput=e=>{
- el("densityText").textContent=e.target.value;
-};
-el("motion").oninput=e=>{
- el("motionText").textContent=e.target.value+"×";
-};
+el("density").oninput=e=>{el("densityText").textContent=e.target.value;};
+el("motion").oninput=e=>{el("motionText").textContent=e.target.value+"×";};
 
 el("eddies").onchange=()=>{
  buildEddies();
- status(
-  el("eddies").value==="on"?
-  "Experimental hill airflow enabled in 3D":
-  "Straight-line wind restored"
- );
+ status(el("eddies").value==="on"?
+  "Experimental hill airflow enabled in 3D":"Straight-line wind restored");
 };
-
 el("eddyStrength").oninput=e=>{
  el("eddyText").textContent=e.target.value+"%";
  buildFlowGrid();
@@ -1777,10 +1670,7 @@ el("standToggle").onclick=()=>{
  const hidden=el("standList").classList.toggle("hidden");
  el("standToggle").textContent=hidden?"📍 Stand ▸":"📍 Stand ▾";
 };
-el("place").onclick=()=>{
- placing=true;
- status("Tap terrain to set stand");
-};
+el("place").onclick=()=>{placing=true;status("Tap terrain to set stand");};
 el("drag").onclick=()=>{
  dragging=!dragging;
  if(mode==="2d"&&standMarker){
@@ -1789,16 +1679,14 @@ el("drag").onclick=()=>{
  }
  el("drag").textContent="Drag stand: "+(dragging?"on":"off");
 };
-
 el("gps").onclick=()=>requestGPS(false);
 el("gpsStand").onclick=()=>requestGPS(true);
-el("home").onclick=()=>centerOn(HOME,15);
-el("goStand").onclick=()=>centerOn(stand,17);
-el("resetStand").onclick=()=>{
- setStand(HOME);
- centerOn(HOME,16);
+el("home").onclick=()=>{
+ stand=propertyStand.slice();
+ return goLocation(HOME,"Autauga property",false);
 };
-
+el("goStand").onclick=()=>centerOn(stand,17);
+el("resetStand").onclick=()=>{setStand(area);centerOn(area,16);};
 el("enable").onclick=start3D;
 el("back").onclick=back2D;
 el("relief").onclick=()=>setView("relief");
@@ -1807,12 +1695,8 @@ el("satellite").onclick=()=>setView("satellite");
 el("tilt").oninput=e=>{
  const v=+e.target.value;
  el("tiltText").textContent=v+"°";
- if(mode==="3d"){
-  phi=Math.PI/2-v*Math.PI/180;
-  updateCamera();
- }
+ if(mode==="3d"){phi=Math.PI/2-v*Math.PI/180;updateCamera();}
 };
-
 el("height").oninput=e=>{
  exaggeration=+e.target.value;
  el("heightText").textContent=exaggeration+"×";
@@ -1822,32 +1706,22 @@ el("height").oninput=e=>{
   updateCamera();
  }
 };
-
 el("shade").oninput=e=>{
  const v=+e.target.value;
  el("shadeText").textContent=v+"%";
  if(shadeMaterial)shadeMaterial.opacity=v/100;
  applyView();
 };
-
 el("left").onclick=()=>{
- if(mode==="3d"){
-  theta-=Math.PI/6;
-  updateCamera();
- }
+ if(mode==="3d"){theta-=Math.PI/6;updateCamera();}
 };
 el("right").onclick=()=>{
- if(mode==="3d"){
-  theta+=Math.PI/6;
-  updateCamera();
- }
+ if(mode==="3d"){theta+=Math.PI/6;updateCamera();}
 };
 el("animate").onclick=()=>{
  animation=!animation;
  el("animate").textContent="Animation: "+(animation?"on":"off");
 };
-
-/* CONTROL PANEL */
 
 function showTab(name){
  for(const tab of ["wind","gust","terrain","eddy","more"]){
@@ -1880,8 +1754,7 @@ let pointer=null;
 
 function turnCompass(e){
  const r=el("wheel").getBoundingClientRect();
- const x=e.clientX-r.left-r.width/2;
- const y=e.clientY-r.top-r.height/2;
+ const x=e.clientX-r.left-r.width/2,y=e.clientY-r.top-r.height/2;
  setBearing(Math.atan2(x,-y)*180/Math.PI);
 }
 
@@ -1891,30 +1764,24 @@ function wireCompass(target,type){
   e.stopPropagation();
   pointer={
    id:e.pointerId,type,x:e.clientX,y:e.clientY,
-   left:el("compass").offsetLeft,
-   top:el("compass").offsetTop
+   left:el("compass").offsetLeft,top:el("compass").offsetTop
   };
   target.setPointerCapture(e.pointerId);
   if(type==="turn")turnCompass(e);
  });
-
  target.addEventListener("pointermove",e=>{
   if(!pointer||pointer.id!==e.pointerId)return;
   e.preventDefault();
-
   if(pointer.type==="move"){
    const x=pointer.left+e.clientX-pointer.x;
    const y=pointer.top+e.clientY-pointer.y;
-   el("compass").style.left=
-    Math.max(0,Math.min(root.clientWidth-76,x))+"px";
+   el("compass").style.left=clamp(x,0,root.clientWidth-76)+"px";
    el("compass").style.right="auto";
-   el("compass").style.top=
-    Math.max(0,Math.min(root.clientHeight-100,y))+"px";
+   el("compass").style.top=clamp(y,0,root.clientHeight-100)+"px";
   }else{
    turnCompass(e);
   }
  });
-
  for(const name of ["pointerup","pointercancel"]){
   target.addEventListener(name,e=>{
    if(pointer&&pointer.id===e.pointerId)pointer=null;
@@ -1924,9 +1791,7 @@ function wireCompass(target,type){
 
 wireCompass(el("move"),"move");
 wireCompass(el("wheel"),"turn");
-el("bearingButton").addEventListener(
- "pointerdown",e=>e.stopPropagation()
-);
+el("bearingButton").addEventListener("pointerdown",e=>e.stopPropagation());
 
 refresh();
 start2D();
