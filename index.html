@@ -224,6 +224,13 @@ html,body{margin:0;height:100%;overflow:hidden}
 <div class="note">Weather: <a href="https://open-meteo.com/" target="_blank" rel="noopener" style="color:#b9e8c6">Open-Meteo</a> · Best Match · model-based current conditions.</div>
 </div>
 <div id="a77overlays" class="hidden">
+<div class="line"><label>Elevation source
+<select id="a77terrainSource">
+<option value="regional" selected>Regional terrain — fast</option>
+<option value="usgs">USGS 3DEP / LiDAR terrain</option>
+</select></label></div>
+<div id="a77lidarInfo" class="note" aria-live="polite">Regional terrain active. Select USGS to stream higher-detail bare-earth elevation where available.</div>
+<div class="line"><button id="a77groundView">Bare-earth view</button><button id="a77imageryView">Satellite view</button></div>
 <div class="line"><button id="a77slopeToggle" aria-pressed="false">Slope shading: off</button></div>
 <div class="line"><label>Slope opacity <b id="a77slopeOpacityText">45%</b>
 <input id="a77slopeOpacity" type="range" min="0" max="100" step="5" value="45"></label></div>
@@ -240,8 +247,8 @@ html,body{margin:0;height:100%;overflow:hidden}
 <div class="line"><label>Contour opacity <b id="a77contourOpacityText">85%</b>
 <input id="a77contourOpacity" type="range" min="0" max="100" step="5" value="85"></label></div>
 <div id="a77contourInfo" class="note" aria-live="polite">Turn on for elevation lines and labels in feet.</div>
-<div class="note">Both overlays follow the satellite map in 2D and 3D and load as you move. Zoom in for detail. Contour intervals: 200 ft at zoom 10–11, 100 ft at 12–13, 50 ft at 14, and 20 ft at 15+. Bold lines are labeled in feet.</div>
-<div class="note">Derived from regional elevation data, not survey or LiDAR detail. Slope is in degrees and uses actual terrain height, independent of 3D exaggeration.</div>
+<div class="note">Both overlays load as you move in 2D and 3D. Contours use 200, 100, 50, then 20 ft intervals as you zoom in. USGS adds 10 ft at zoom 16 and 5 ft at 17+. Bold lines are labeled in feet.</div>
+<div class="note">USGS uses its best available DEM; resolution and collection dates vary. A finer display grid does not create new detail. LiDAR terrain is bare earth, without trees or buildings. Slope uses actual elevation, independent of 3D exaggeration.</div>
 </div>
 
 <div id="a77more" class="hidden">
@@ -269,7 +276,7 @@ html,body{margin:0;height:100%;overflow:hidden}
 </select></label>
 </div>
 <div id="a77accuracy" class="note">GPS not requested</div>
-<div class="note">V7.7 · Wind positions track sampled terrain elevation in 3D. Wind is a directional visualization, not a calculated airflow or turbulence model. Elevation is regional DEM data, not LiDAR.</div>
+<div class="note">Wind positions follow the selected elevation source in 3D. Terrain airflow is experimental. Choose regional or USGS elevation under Overlays; source resolution and collection dates vary.</div>
 </div>
 </div>
 </div>
@@ -286,6 +293,7 @@ const norm=n=>(n%360+360)%360,clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const names=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
 const CDN="https://unpkg.com/maplibre-gl@5.6.2/dist/";
 const DEM="https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
+const USGS="https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer";
 const SAT="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 let map,ML,ready=false,mode="2d",bearing=315,stand=HOME.slice(),propertyStand=HOME.slice(),area=HOME.slice(),gps=null;
 let placing=false,dragging=false,animation=true,standMarker,exaggeration=3,preferredView="satellite";
@@ -396,17 +404,68 @@ let slopeEnabled=false,contourEnabled=false,contourLoading=false,contourDem=null
 let slopeWorker=null,slopeSequence=0;
 const slopePending=new Map();
 let overlayErrors={slope:"",contour:""};
+let elevationKind="regional",elevationSwitching=false,lidarCoverageToken=0,lidarCoverageController=null,lidarCoverageTimer;
+let lastLidarCoverage=null;
+let lidarGapFill=false;
+const elevationTemplate=()=>elevationKind==="usgs"?"usgs":DEM;
+const elevationMaxZoom=()=>elevationKind==="usgs"?17:15;
 function slopeTileWorker(){
  const demCache=new Map(),queue=[];
- let active=0;
+ let active=0,lercReady=null,contourManager=null;
+ const usgs="https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer";
+ const decodedPng=new Map();
+ let netActive=0;const netWaiting=[];
+ async function usgsFetch(url,signal){
+  if(netActive>=4)await new Promise(resolve=>netWaiting.push(resolve));
+  netActive++;
+  try{return await fetch(url,{signal});}
+  finally{netActive--;netWaiting.shift()?.();}
+ }
+ async function rawUSGS(z,x,y,signal){
+  if(!lercReady){
+   lercReady=(async()=>{importScripts("https://unpkg.com/lerc@4.0.4/LercDecode.js");await self.Lerc.load({locateFile:file=>"https://unpkg.com/lerc@4.0.4/"+file});})();
+   lercReady.catch(()=>{lercReady=null;});
+  }
+  await lercReady;
+  const span=40075016.68557849/(2**z),left=-20037508.342789244+x*span,top=20037508.342789244-y*span;
+  const url=new URL(usgs+"/exportImage");
+  url.search=new URLSearchParams({f:"image",bbox:[left,top-span,left+span,top].join(","),bboxSR:"3857",imageSR:"3857",size:"256,256",format:"lerc",pixelType:"F32",interpolation:"RSP_BilinearInterpolation",renderingRule:JSON.stringify({rasterFunction:"None"}),mosaicRule:JSON.stringify({mosaicMethod:"esriMosaicAttribute",sortField:"LowPS",sortValue:"0",ascending:true,mosaicOperation:"MT_FIRST"}),compressionTolerance:"0.001"});
+  const response=await usgsFetch(url.href,signal);
+  if(!response.ok)throw Error("USGS elevation HTTP "+response.status);
+  const buffer=await response.arrayBuffer();
+  if(new Uint8Array(buffer)[0]===123){const d=JSON.parse(new TextDecoder().decode(buffer));throw Error(d.error?.message||"USGS elevation unavailable");}
+  const result=self.Lerc.decode(buffer);
+  if(result.width!==256||result.height!==256)throw Error("Unexpected USGS elevation size");
+  const values=new Float32Array(result.pixels[0]),mask=result.mask;
+  let valid=0;
+  for(let i=0;i<values.length;i++){
+   if((mask&&!mask[i])||!Number.isFinite(values[i])||values[i]<-12000||values[i]>10000)values[i]=NaN;
+   else valid++;
+  }
+  if(valid<values.length){
+   const zz=Math.min(z,15),scale=2**(z-zz),xx=Math.floor(x/scale),yy=Math.floor(y/scale);
+   const regional=await dem(zz,xx,yy,"https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png");
+   for(let row=0;row<256;row++)for(let col=0;col<256;col++){
+    const i=row*256+col;if(Number.isFinite(values[i]))continue;
+    const px=Math.max(0,Math.min(255,((x-xx*scale)*256+col+.5)/scale-.5));
+    const py=Math.max(0,Math.min(255,((y-yy*scale)*256+row+.5)/scale-.5));
+    const x0=Math.floor(px),y0=Math.floor(py),x1=Math.min(255,x0+1),y1=Math.min(255,y0+1),a=px-x0,b=py-y0;
+    values[i]=regional[y0*256+x0]*(1-a)*(1-b)+regional[y0*256+x1]*a*(1-b)+regional[y1*256+x0]*(1-a)*b+regional[y1*256+x1]*a*b;
+   }
+   self.postMessage({notice:"regional-gap-fill"});
+  }
+  if(values.some(v=>!Number.isFinite(v)))throw Error("No elevation available for this tile");
+  return values;
+ }
  const palette=[[89,183,107],[211,214,90],[246,180,72],[237,113,64],[206,62,81],[151,73,174]];
  async function dem(z,x,y,template){
   const n=2**z;x=(x%n+n)%n;y=Math.max(0,Math.min(n-1,y));
-  const key=z+"/"+x+"/"+y;
+  const key=template+"/"+z+"/"+x+"/"+y;
   if(demCache.has(key)){const p=demCache.get(key);demCache.delete(key);demCache.set(key,p);return p;}
   const promise=(async()=>{
-   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);
+   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),30000);
    try{
+    if(template==="usgs")return await rawUSGS(z,x,y,controller.signal);
     const response=await fetch(template.replace("{z}",z).replace("{x}",x).replace("{y}",y),{signal:controller.signal});
     if(!response.ok)throw Error("Elevation HTTP "+response.status);
     const bitmap=await createImageBitmap(await response.blob(),{colorSpaceConversion:"none",premultiplyAlpha:"none"});
@@ -427,6 +486,29 @@ function slopeTileWorker(){
  }
  async function tile(d){
   const {z,x,y,template}=d;
+  if(d.kind==="dem"){
+   const key=z+"/"+x+"/"+y;
+   if(decodedPng.has(key))return decodedPng.get(key).slice(0);
+   const values=await dem(z,x,y,"usgs"),canvas=new OffscreenCanvas(256,256),ctx=canvas.getContext("2d"),image=ctx.createImageData(256,256);
+   for(let i=0;i<values.length;i++){
+    const n=Math.round((values[i]+32768)*256),k=i*4;
+    image.data[k]=Math.floor(n/65536);image.data[k+1]=Math.floor(n/256)%256;image.data[k+2]=n%256;image.data[k+3]=255;
+   }
+   ctx.putImageData(image,0,0);
+   const data=await (await canvas.convertToBlob({type:"image/png"})).arrayBuffer();
+   decodedPng.set(key,data.slice(0));while(decodedPng.size>32)decodedPng.delete(decodedPng.keys().next().value);
+   return data;
+  }
+  if(d.kind==="contour"){
+   if(!contourManager){
+    importScripts("https://unpkg.com/maplibre-contour@0.1.0/dist/index.min.js");
+    contourManager=new self.mlcontour.LocalDemManager({demUrlPattern:"usgs/{z}/{x}/{y}",encoding:"terrarium",maxzoom:17,cacheSize:32,timeoutMs:60000});
+    contourManager.fetchAndParseTile=async(z,x,y)=>({width:256,height:256,data:await dem(z,x,y,"usgs")});
+   }
+   const levels=z<12?[200,1000]:z<14?[100,500]:z<15?[50,200]:z<16?[20,100]:z<17?[10,50]:[5,25];
+   const result=await contourManager.fetchContourTile(z,x,y,{levels,multiplier:3.28084,elevationKey:"ele",levelKey:"level",contourLayer:"contours",overzoom:1},new AbortController());
+   return result.arrayBuffer.slice(0);
+  }
   const [center,left,right,up,down]=await Promise.all([
    dem(z,x,y,template),dem(z,x-1,y,template),dem(z,x+1,y,template),dem(z,x,y-1,template),dem(z,x,y+1,template)
   ]);
@@ -456,7 +538,7 @@ function slopeTileWorker(){
  self.onmessage=event=>{
   const d=event.data;
   if(d.cancel){const i=queue.findIndex(job=>job.id===d.cancel);if(i>=0)queue.splice(i,1);return;}
-  queue.push(d);drain();
+  if(d.kind==="dem")queue.unshift(d);else queue.push(d);drain();
  };
 }
 function overlayInfo(){
@@ -465,9 +547,13 @@ function overlayInfo(){
  el("contourToggle").textContent=contourLoading?"Loading contours…":"Topo contours: "+(contourEnabled?"on":"off");
  el("contourToggle").setAttribute("aria-pressed",String(contourEnabled));
  el("contourToggle").disabled=contourLoading;
+ el("terrainSource").disabled=elevationSwitching||contourLoading;
+ el("slopeToggle").disabled=elevationSwitching;
+ el("contourToggle").disabled=elevationSwitching||contourLoading;
  const lowZoom=ready&&map.getZoom()<10;
  el("slopeInfo").textContent=overlayErrors.slope||(!slopeEnabled?"Turn on to shade terrain by steepness.":lowZoom?"Zoom in to level 10 or closer for slope detail.":"Slope shading on · terrain tiles load as you move.");
- const z=ready?map.getZoom():15,interval=z<12?200:z<14?100:z<15?50:20,major=z<12?1000:z<14?500:z<15?200:100;
+ const z=ready?map.getZoom():15,detail=elevationKind==="usgs"&&z>=16;
+ const interval=z<12?200:z<14?100:z<15?50:detail?(z<17?10:5):20,major=z<12?1000:z<14?500:z<15?200:detail?(z<17?50:25):100;
  el("contourInfo").textContent=overlayErrors.contour||(contourLoading?"Preparing contours…":!contourEnabled?"Turn on for elevation lines and labels in feet.":lowZoom?"Zoom in to level 10 or closer for contours.":"Contours on · "+interval+" ft spacing · bold every "+major+" ft · tiles load as you move.");
 }
 function registerSlopeProtocol(){
@@ -476,6 +562,10 @@ function registerSlopeProtocol(){
  const url=URL.createObjectURL(new Blob(["("+slopeTileWorker.toString()+")();"],{type:"text/javascript"}));
  try{slopeWorker=new Worker(url);}finally{URL.revokeObjectURL(url);}
  slopeWorker.onmessage=event=>{
+  if(event.data.notice==="regional-gap-fill"){
+   if(elevationKind==="usgs"||elevationSwitching){lidarGapFill=true;if(elevationKind==="usgs"&&lastLidarCoverage)showLidarCoverage(lastLidarCoverage.item,lastLidarCoverage.p);}
+   return;
+  }
   const d=event.data,p=slopePending.get(d.id);if(!p)return;
   d.error?p.reject(Error(d.error)):p.resolve({data:d.data});
  };
@@ -483,9 +573,19 @@ function registerSlopeProtocol(){
   for(const p of [...slopePending.values()])p.reject(Error("Slope worker unavailable. Reload to retry."));
   overlayErrors.slope="Slope worker unavailable. Reload to retry.";overlayInfo();
  };
- ML.addProtocol("a77slope",(request,controller)=>new Promise((resolve,reject)=>{
-  const parts=request.url.match(/^a77slope:\/\/(\d+)\/(\d+)\/(\d+)$/);
-  if(!parts){reject(Error("Invalid slope tile"));return;}
+ ML.addProtocol("a77slope",(request,controller)=>{
+  const parts=request.url.match(/^a77slope:\/\/(regional|usgs)\/(\d+)\/(\d+)\/(\d+)$/);
+  if(!parts)return Promise.reject(Error("Invalid slope tile"));
+  return terrainJob({kind:"slope",z:+parts[2],x:+parts[3],y:+parts[4],template:parts[1]==="usgs"?"usgs":DEM},controller);
+ });
+ for(const [protocol,kind] of [["a77usgs","dem"],["a77topo","contour"]])ML.addProtocol(protocol,(request,controller)=>{
+  const parts=request.url.match(/:\/\/(\d+)\/(\d+)\/(\d+)$/);
+  if(!parts)return Promise.reject(Error("Invalid USGS tile"));
+  return terrainJob({kind,z:+parts[1],x:+parts[2],y:+parts[3],template:"usgs"},controller);
+ });
+}
+function terrainJob(job,controller=new AbortController()){
+ return new Promise((resolve,reject)=>{
   const id=++slopeSequence,signal=controller.signal;
   let timer;
   const cleanup=()=>{clearTimeout(timer);signal.removeEventListener("abort",abort);slopePending.delete(id);};
@@ -493,9 +593,93 @@ function registerSlopeProtocol(){
   if(signal.aborted){abort();return;}
   slopePending.set(id,{resolve:data=>{cleanup();resolve(data);},reject:error=>{cleanup();reject(error);}});
   signal.addEventListener("abort",abort,{once:true});
-  timer=setTimeout(()=>{slopeWorker.postMessage({cancel:id});cleanup();reject(Error("Slope tile timed out"));},45000);
-  slopeWorker.postMessage({id,z:+parts[1],x:+parts[2],y:+parts[3],template:DEM});
- }));
+  timer=setTimeout(()=>{slopeWorker.postMessage({cancel:id});cleanup();reject(Error("Elevation tile timed out"));},90000);
+  slopeWorker.postMessage({id,...job});
+ });
+}
+function terrainTileAt(p,z){const n=2**z;return {z,x:Math.floor((p[1]+180)/360*n),y:Math.floor((1-Math.asinh(Math.tan(p[0]*Math.PI/180))/Math.PI)/2*n)};}
+function pointDistance(a,b){return Math.hypot((a[0]-b[0])*111320,(a[1]-b[1])*111320*Math.cos(a[0]*Math.PI/180));}
+async function lidarCoverage(p,signal){
+ const url=new URL(USGS+"/query");
+ url.search=new URLSearchParams({f:"json",geometry:p[1]+","+p[0],geometryType:"esriGeometryPoint",inSR:"4326",spatialRel:"esriSpatialRelIntersects",where:"Category=1 AND LowPS>0",outFields:"Name,title,LowPS,AcquisitionDate",returnGeometry:"false",orderByFields:"LowPS ASC",resultRecordCount:"10"});
+ const response=await fetch(url,{signal});if(!response.ok)throw Error("Coverage HTTP "+response.status);
+ const data=await response.json();if(data.error)throw Error(data.error.message||"Coverage lookup failed");
+ const items=(data.features||[]).map(f=>f.attributes).filter(a=>Number.isFinite(a.LowPS)&&a.LowPS>0);
+ if(!items.length)throw Error("No USGS elevation coverage found here. Regional terrain remains available.");
+ return items.sort((a,b)=>a.LowPS-b.LowPS)[0];
+}
+function showLidarCoverage(item,p){
+ lastLidarCoverage={item,p,time:Date.now()};
+ const date=Number.isFinite(item.AcquisitionDate)?" · collected "+new Date(item.AcquisitionDate).getUTCFullYear():"";
+ const size=item.LowPS<2?item.LowPS.toFixed(1):Math.round(item.LowPS);
+ el("lidarInfo").textContent="USGS active · best source near map center: ~"+size+" m"+date+" · "+(item.Name||item.title||"USGS 3DEP")+(item.LowPS<=2?" · LiDAR-derived DEM.":" · high-resolution LiDAR not confirmed here.")+(lidarGapFill?" Some missing cells use regional terrain.":"");
+}
+function scheduleLidarCoverage(){
+ clearTimeout(lidarCoverageTimer);
+ if(elevationKind!=="usgs"||elevationSwitching||!ready)return;
+ lidarCoverageTimer=setTimeout(async()=>{
+  const center=map.getCenter(),p=[center.lat,center.lng];
+  if(lastLidarCoverage&&pointDistance(p,lastLidarCoverage.p)<500&&Date.now()-lastLidarCoverage.time<300000)return;
+  const id=++lidarCoverageToken;if(lidarCoverageController)lidarCoverageController.abort();
+  const controller=new AbortController();lidarCoverageController=controller;
+  const timer=setTimeout(()=>controller.abort(),15000);
+  el("lidarInfo").textContent="USGS terrain active · checking source resolution near this view…";
+  try{
+   const item=await lidarCoverage(p,controller.signal),now=map.getCenter();
+   if(id===lidarCoverageToken&&elevationKind==="usgs"&&pointDistance(p,[now.lat,now.lng])<500)showLidarCoverage(item,p);
+  }catch(error){if(id===lidarCoverageToken&&elevationKind==="usgs")el("lidarInfo").textContent="USGS terrain active · source resolution unavailable here. "+(error.name==="AbortError"?"Coverage check timed out.":error.message);}
+  finally{clearTimeout(timer);if(id===lidarCoverageToken)lidarCoverageController=null;}
+ },700);
+}
+async function replaceElevationSources(kind){
+ const keepSlope=slopeEnabled,keepContours=contourEnabled;
+ slopeEnabled=false;contourEnabled=false;
+ map.setTerrain(null);
+ for(const id of ["topo-labels","topo-lines","topo-halo","slope-shading","hills"])if(map.getLayer(id))map.removeLayer(id);
+ for(const id of ["topo-tiles","slope-tiles","shade","terrain"])if(map.getSource(id))map.removeSource(id);
+ elevationKind=kind;
+ const tiles=[kind==="usgs"?"a77usgs://{z}/{x}/{y}":DEM],maxzoom=elevationMaxZoom();
+ const attribution=kind==="usgs"?"Elevation: USGS 3DEP (resolution varies)":"Elevation: Mapzen / AWS";
+ map.addSource("terrain",{type:"raster-dem",tiles,tileSize:256,maxzoom,encoding:"terrarium",attribution});
+ map.addSource("shade",{type:"raster-dem",tiles,tileSize:256,maxzoom,encoding:"terrarium"});
+ map.addLayer({id:"hills",type:"hillshade",source:"shade",paint:{"hillshade-exaggeration":.45}},"gps-accuracy-fill");
+ field=null;coverageRegions=[];matrix=null;eddyCenters=[];resetParticles();
+ if(mode==="3d")map.setTerrain({source:"terrain",exaggeration});
+ overlayErrors={slope:"",contour:""};
+ if(keepSlope)toggleSlope();
+ if(keepContours)await toggleContours();
+ applyView();scheduleBuild();updateGPSPosition();updateInfo();applyOverlayStyles();
+}
+async function selectElevationSource(){
+ if(!ready||elevationSwitching){el("terrainSource").value=elevationKind;return;}
+ const next=el("terrainSource").value;if(next===elevationKind)return;
+ const before=elevationKind;
+ elevationSwitching=true;lidarCoverageToken++;clearTimeout(lidarCoverageTimer);
+ if(lidarCoverageController)lidarCoverageController.abort();
+ const controller=new AbortController();lidarCoverageController=controller;
+ const timer=setTimeout(()=>controller.abort(),90000);
+ overlayInfo();
+ try{
+  if(next==="usgs"){
+   el("lidarInfo").textContent="Checking USGS coverage and loading the first elevation tile…";
+   registerSlopeProtocol();
+   const center=map.getCenter(),p=[center.lat,center.lng];
+   const [item]=await Promise.all([lidarCoverage(p,controller.signal),terrainJob({kind:"dem",...terrainTileAt(p,17),template:"usgs"},controller)]);
+   if(controller.signal.aborted)throw Error("USGS request timed out");
+   await replaceElevationSources(next);showLidarCoverage(item,p);
+  }else{
+   await replaceElevationSources(next);
+   el("lidarInfo").textContent="Regional terrain active. Select USGS to stream higher-detail bare-earth elevation where available.";
+  }
+  status(next==="usgs"?"USGS elevation active · zoom in for LiDAR detail":"Regional elevation restored");
+ }catch(error){
+  controller.abort();
+  if(elevationKind!==before){try{await replaceElevationSources(before);}catch(recovery){status("Terrain switch failed. Reload the page.");}}
+  el("lidarInfo").textContent="Elevation switch failed: "+(error.name==="AbortError"?"request timed out":error.message)+" · previous source retained.";
+ }finally{
+  clearTimeout(timer);elevationSwitching=false;lidarCoverageController=null;
+  el("terrainSource").value=elevationKind;overlayInfo();scheduleLidarCoverage();
+ }
 }
 function applyOverlayStyles(){
  if(!ready)return;
@@ -519,7 +703,7 @@ function toggleSlope(){
  try{
   if(!map.getSource("slope-tiles")){
    registerSlopeProtocol();
-   map.addSource("slope-tiles",{type:"raster",tiles:["a77slope://{z}/{x}/{y}"],tileSize:256,minzoom:10,maxzoom:15,attribution:"Slope derived from Mapzen / AWS elevation"});
+   map.addSource("slope-tiles",{type:"raster",tiles:["a77slope://"+elevationKind+"/{z}/{x}/{y}"],tileSize:256,minzoom:10,maxzoom:elevationMaxZoom(),attribution:elevationKind==="usgs"?"Slope: USGS 3DEP":"Slope: Mapzen / AWS"});
    map.addLayer({id:"slope-shading",type:"raster",source:"slope-tiles",minzoom:10,paint:{"raster-opacity":+el("slopeOpacity").value/100,"raster-fade-duration":150,"raster-resampling":"nearest"}},map.getLayer("topo-halo")?"topo-halo":"gps-accuracy-fill");
   }
   slopeEnabled=!slopeEnabled;applyOverlayStyles();
@@ -532,13 +716,19 @@ async function toggleContours(){
  if(map.getSource("topo-tiles")){contourEnabled=!contourEnabled;applyOverlayStyles();return;}
  contourLoading=true;overlayInfo();
  try{
-  if(!window.mlcontour)await script("https://unpkg.com/maplibre-contour@0.1.0/dist/index.min.js");
-  if(!window.mlcontour)throw Error("Contour library unavailable");
-  if(!contourDem){
-   contourDem=new window.mlcontour.DemSource({url:DEM,encoding:"terrarium",maxzoom:15,worker:true,cacheSize:64,timeoutMs:20000});
-   contourDem.setupMaplibre(ML);
+  let tiles;
+  if(elevationKind==="usgs"){
+   registerSlopeProtocol();tiles=["a77topo://{z}/{x}/{y}"];
+  }else{
+   if(!window.mlcontour)await script("https://unpkg.com/maplibre-contour@0.1.0/dist/index.min.js");
+   if(!window.mlcontour)throw Error("Contour library unavailable");
+   if(!contourDem){
+    contourDem=new window.mlcontour.DemSource({url:DEM,encoding:"terrarium",maxzoom:15,worker:true,cacheSize:64,timeoutMs:20000});
+    contourDem.setupMaplibre(ML);
+   }
+   tiles=[contourDem.contourProtocolUrl({multiplier:3.28084,thresholds:{10:[200,1000],12:[100,500],14:[50,200],15:[20,100]},elevationKey:"ele",levelKey:"level",contourLayer:"contours",overzoom:1})];
   }
-  map.addSource("topo-tiles",{type:"vector",tiles:[contourDem.contourProtocolUrl({multiplier:3.28084,thresholds:{10:[200,1000],12:[100,500],14:[50,200],15:[20,100]},elevationKey:"ele",levelKey:"level",contourLayer:"contours",overzoom:1})],minzoom:10,maxzoom:15,attribution:"Contours derived from Mapzen / AWS elevation"});
+  map.addSource("topo-tiles",{type:"vector",tiles,minzoom:10,maxzoom:elevationMaxZoom(),attribution:elevationKind==="usgs"?"Contours: USGS 3DEP":"Contours: Mapzen / AWS"});
   const common={source:"topo-tiles","source-layer":"contours",minzoom:10};
   map.addLayer({id:"topo-halo",type:"line",...common,layout:{"line-join":"round","line-cap":"round"},paint:{"line-color":"#172015","line-width":["match",["get","level"],1,3.2,2.2],"line-opacity":.85}},"gps-accuracy-fill");
   map.addLayer({id:"topo-lines",type:"line",...common,layout:{"line-join":"round","line-cap":"round"},paint:{"line-color":"#fff2bd","line-width":["match",["get","level"],1,1.5,.7],"line-opacity":.85}},"gps-accuracy-fill");
@@ -806,6 +996,9 @@ el("searchForm").onsubmit=searchPlaces;
 el("loadWeather").onclick=loadWeather;el("applyWeather").onclick=applyWeather;
 el("slopeToggle").onclick=toggleSlope;el("contourToggle").onclick=toggleContours;
 el("slopeOpacity").oninput=applyOverlayStyles;el("contourOpacity").oninput=applyOverlayStyles;
+el("terrainSource").onchange=selectElevationSource;
+el("groundView").onclick=()=>{preferredView="relief";applyView();status("Bare-earth view · selected elevation source");};
+el("imageryView").onclick=()=>{preferredView="satellite";applyView();};
 el("direction").oninput=e=>setBearing(+e.target.value);
 el("minus").onclick=()=>setBearing(bearing-5);el("plus").onclick=()=>setBearing(bearing+5);
 el("windHeight").onchange=()=>{
@@ -873,6 +1066,10 @@ map.addLayer({id:"gps-accuracy-line",type:"line",source:"gps-accuracy",paint:{"l
  map.on("terrain",()=>{updateGPSPosition();if(following&&gpsFresh())centerGPS(false);});
  map.on("render",updateGPSPosition);
  map.on("moveend",overlayInfo);
+ map.on("moveend",scheduleLidarCoverage);
+ map.on("error",e=>{
+  if(elevationKind==="usgs"&&(e.sourceId==="terrain"||e.sourceId==="shade"))el("lidarInfo").textContent="Some USGS elevation tiles could not load. Check your connection or switch to Regional terrain.";
+ });
  map.on("error",e=>{
   if(e.sourceId==="slope-tiles")overlayErrors.slope="Some slope tiles could not load. Move the map or toggle to retry.";
   if(e.sourceId==="topo-tiles")overlayErrors.contour="Some contour tiles could not load. Move the map or toggle to retry.";
