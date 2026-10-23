@@ -31,7 +31,7 @@ html,body{margin:0;height:100%;overflow:hidden}
 #awl77 .note{font-size:10px;line-height:1.5}
 #awl77 .maplibregl-ctrl-attrib{font-size:8px}
 #awl77 .pin{border:2px solid white;border-radius:50%;box-shadow:0 0 5px #111}
-#awl77 .maplibregl-marker{pointer-events:auto} #awl77 .compass{transform:scale(.30);transform-origin:top right}
+#awl77 .maplibregl-marker{pointer-events:auto} #awl77 .compass{transform:scale(.345);transform-origin:top right}
 #awl77 .panel{transform:scale(.75);transform-origin:bottom left}
 #awl77 .stands{transform:scale(.75);transform-origin:top right}
 #awl77 .gps-beacon{width:20px;height:20px;position:relative;pointer-events:none}
@@ -53,6 +53,9 @@ html,body{margin:0;height:100%;overflow:hidden}
  opacity:1!important;
 }
 #awl77 .gps-beacon:after{display:none!important}
+#awl77 .tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}
+#awl77 .weather-card{line-height:1.6;margin:8px 0}
+#awl77 button:disabled{opacity:.5;cursor:default}
 </style>
 
 <div id="a77map" class="map"></div>
@@ -103,11 +106,13 @@ html,body{margin:0;height:100%;overflow:hidden}
 <button data-tab="gust">Gusts</button>
 <button data-tab="terrain">3D</button>
 <button data-tab="eddy">Eddies</button>
+<button data-tab="weather">Weather</button>
 <button data-tab="more">More</button>
 <button id="a77close">✕</button>
 </div>
 
 <div id="a77wind">
+<div id="a77windSource" class="note">Wind input: manual</div>
 <div class="line">
 <label for="a77windHeight">Wind height above terrain</label>
 <select id="a77windHeight">
@@ -190,6 +195,20 @@ html,body{margin:0;height:100%;overflow:hidden}
 <div id="a77eddyInfo" class="note">Enable 3D to find potential leeward eddy zones.</div>
 <div class="note">Windward speed-up, crest disturbance, and leeward eddies are experimental visual estimates. The 5 ft and 20 ft layers use the same horizontal flow estimate. Distant airflow uses coarser terrain estimates. Colors are for visibility. The yellow cone follows prevailing wind.</div>
 </div>
+<div id="a77weather" class="hidden">
+<div id="a77weatherLocation" class="note"></div>
+<div class="line">
+<button id="a77loadWeather">Load Weather</button>
+<button id="a77applyWeather" disabled>Apply Weather</button>
+</div>
+<div id="a77weatherStatus" class="note" aria-live="polite">Open Weather to load a preview for the stand.</div>
+<div id="a77weatherSummary" class="weather-card"></div>
+<div id="a77weatherWind" class="weather-card"></div>
+<div id="a77weatherTime" class="note"></div>
+<div class="note">Apply sets wind direction, speed, and gusts, then rebuilds the experimental terrain flow. Other weather values are informational. Manual wind edits override applied weather.</div>
+<div class="note">Forecast wind is at 10 m (33 ft). The 5 ft / 20 ft layers share this baseline; they are not separate measured forecasts. Regional weather cannot resolve each local eddy.</div>
+<div class="note">Weather: <a href="https://open-meteo.com/" target="_blank" rel="noopener" style="color:#b9e8c6">Open-Meteo</a> · Best Match · model-based current conditions.</div>
+</div>
 <div id="a77more" class="hidden">
 <form id="a77searchForm">
 <label for="a77searchInput">Nationwide search</label>
@@ -238,6 +257,8 @@ let map,ML,ready=false,mode="2d",bearing=315,stand=HOME.slice(),propertyStand=HO
 let placing=false,dragging=false,animation=true,standMarker,exaggeration=3,preferredView="satellite";
 let statusTimer,buildTimer,matrix=null,field=null,eddyCenters=[],windClock=0,lastTime=0;
 let searchToken=0,searchController=null,lastTileBuild=0;
+let weatherData=null,weatherApplied=null,weatherController=null;
+let weatherRequest=0,weatherLoading=false,weatherMessage="",weatherAgeTimer=null;
 let gpsWatch=null,gpsSession=0,gpsFix=null,gpsTimer=null,gpsBeacon=null;
 let following=false,gpsCenterPending=false,gpsStandPending=false,gpsError="",gpsCameraUpdating=false;
 const N=65,MAX=600;
@@ -252,9 +273,9 @@ function ll(p){return [p[1],p[0]];}
 function destination(p,angle,meters){const a=angle*Math.PI/180;return [p[0]+Math.cos(a)*meters/111320,p[1]+Math.sin(a)*meters/(111320*Math.cos(p[0]*Math.PI/180))];}
 function fanCoordinates(){const speed=+el("speed").value,gust=+el("gustSpeed").value,length=speed?150+speed*48:0,half=Math.min(55,+el("spread").value+Math.max(0,gust-speed)*.45);const pts=[ll(stand)];for(let i=-32;i<=32;i++)pts.push(ll(destination(stand,norm(bearing+180)+i/32*half,length)));pts.push(ll(stand));return pts;}
 function refresh(){el("bearingText").textContent=bearing+"° "+names[Math.round(bearing/22.5)%16];el("bearingButton").textContent=bearing+"°";el("direction").value=bearing;el("needle").setAttribute("transform","rotate("+bearing+" 38 38)");el("speedText").textContent=el("speed").value+" mph";el("gustText").textContent=el("gustSpeed").value+" mph";if(ready){map.getSource("scent").setData({type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[fanCoordinates()]}});map.setPaintProperty("scent-fill","fill-opacity",+el("speed").value?.32:0);map.setPaintProperty("scent-line","line-opacity",+el("speed").value?1:0);}}
-function setBearing(v){bearing=norm(Math.round(v/5)*5);refresh();scheduleBuild();}
+function setBearing(v){manualWind();bearing=norm(Math.round(v/5)*5);refresh();scheduleBuild();}
 function makeMarker(p,color,size,draggable=false){const d=document.createElement("div");d.className="pin";d.style.width=d.style.height=size+"px";d.style.background=color;return new ML.Marker({element:d,draggable}).setLngLat(ll(p)).addTo(map);}
-function setStand(p){stand=p.slice();if(standMarker)standMarker.setLngLat(ll(stand));refresh();status("Stand updated");}
+function setStand(p){stand=p.slice();invalidateWeather();if(standMarker)standMarker.setLngLat(ll(stand));refresh();status("Stand updated");}
 function baseWind(){const a=norm(bearing+180)*Math.PI/180;return {dx:Math.sin(a),dz:-Math.cos(a)};}
 function toLocal(p){const m=ML.MercatorCoordinate.fromLngLat(ll(p));return {x:(m.x-field.cx)/field.unit,z:(m.y-field.cy)/field.unit};}
 function toGeo(x,z){const q=new ML.MercatorCoordinate(field.cx+x*field.unit,field.cy+z*field.unit,0).toLngLat();return [q.lat,q.lng];}
@@ -335,6 +356,117 @@ function spawn(p,w,h){
 function windLoop(time){requestAnimationFrame(windLoop);if(coverageRegions.length){field=coverageRegions[0];eddyCenters=field.eddies;}const w=root.clientWidth,h=root.clientHeight,r=Math.min(devicePixelRatio||1,2);if(canvas.width!==Math.round(w*r)||canvas.height!==Math.round(h*r)){canvas.width=Math.round(w*r);canvas.height=Math.round(h*r);canvas.style.width=w+"px";canvas.style.height=h+"px";resetParticles();}ctx.setTransform(r,0,0,r,0,0);ctx.clearRect(0,0,w,h);const dt=Math.min((time-lastTime||16)/1000,.05);lastTime=time;if(!ready||!animation||map.isMoving()||+el("speed").value<=0)return;windClock+=dt;const speed=+el("speed").value,motion=+el("motion").value,count=+el("density").value,length=6+Math.min(4,speed/7.5);if(mode==="2d"){const a=(norm(bearing+180)-map.getBearing())*Math.PI/180,dx=Math.sin(a),dy=-Math.cos(a);for(let i=0;i<count;i++){const p=particles[i];p.x+=dx*speed*dt*motion*p.factor/35;p.y+=dy*speed*dt*motion*p.factor/35;if(p.x>1.03)p.x=-.03;if(p.x<-.03)p.x=1.03;if(p.y>1.03)p.y=-.03;if(p.y<-.03)p.y=1.03;stroke([{x:p.x*w,y:p.y*h},{x:p.x*w-dx*length,y:p.y*h-dy*length}],colors(i));}return;}if(!field||!matrix)return;for(let i=0;i<count;i++){const p=particles[i];p.life-=dt;if(p.life<=0)p.valid=false;if(p.valid){field=p.region;eddyCenters=field.eddies;}else{spawn(p,w,h);if(!p.valid)continue;}const f=flowAt(p.wx,p.wz),mag=Math.hypot(f.vx,f.vz);if(mag<.015){p.valid=false;continue;}const dx=f.vx/mag,dz=f.vz/mag,a=project(p.wx,p.wz),b=project(p.wx+dx*10,p.wz+dz*10);if(!a||!b){p.valid=false;continue;}const ppm=Math.hypot(b.x-a.x,b.y-a.y)/10;if(ppm<.00001){p.valid=false;continue;}let step=Math.min(speed*motion*w/35/ppm*dt*p.factor,field.span*.04);const limit=eddyCenters.length?Math.min(...eddyCenters.map(e=>e.radius))/12:field.span/100,steps=Math.min(12,Math.max(1,Math.ceil(step*2.2/limit)));step=Math.min(step,steps*limit/2.2);const ds=step/steps;for(let j=0;j<steps;j++){const v=flowAt(p.wx,p.wz),mid=flowAt(p.wx+v.vx*ds*.5,p.wz+v.vz*ds*.5);p.wx+=mid.vx*ds;p.wz+=mid.vz*ds;}const head=project(p.wx,p.wz);if(!head||head.x< -15||head.y< -15||head.x>w+15||head.y>h+15){p.valid=false;continue;}const len=Math.min(length/ppm,field.span*.04),pts=[];let x=p.wx,z=p.wz;for(let j=0;j<=5;j++){const q=project(x,z);if(!q){pts.length=0;break;}pts.push(q);const v=flowAt(x,z),m=Math.hypot(v.vx,v.vz);if(m<.015){pts.length=0;break;}x-=v.vx/m*len/5;z-=v.vz/m*len/5;}if(pts.length)stroke(pts,colors(i));}field=coverageRegions[0];eddyCenters=field.eddies;}
 function applyView(){if(!ready)return;map.setPaintProperty("satellite","raster-opacity",preferredView==="satellite"?1:0);map.setPaintProperty("hills","hillshade-exaggeration",preferredView==="relief"?.7:+el("shade").value/100);}
 function setMode(next){if(!ready)return;mode=next;field=null;coverageRegions=[];matrix=null;resetParticles();if(next==="3d"){map.setTerrain({source:"terrain",exaggeration});map.easeTo({pitch:+el("tilt").value,duration:500});status("Continuous 3D · drag to explore");}else{map.setTerrain(null);map.easeTo({pitch:0,bearing:0,duration:500});status("2D satellite ready");}scheduleBuild();updateInfo();}
+/* Model weather is previewed first; only Apply changes wind inputs. */
+function weatherPoint(p){return p.map(v=>Number(v.toFixed(5)));}
+function sameWeatherPoint(a,b){return !!a&&!!b&&a[0]===weatherPoint(b)[0]&&a[1]===weatherPoint(b)[1];}
+function weatherFresh(d){return !!d&&Date.now()-d.fetchedAt<=30*60000&&Date.now()-d.time<=90*60000&&d.time-Date.now()<=30*60000;}
+function weatherUsable(d){return !!d&&weatherFresh(d)&&sameWeatherPoint(d.point,stand)&&d.speed!==null&&d.gust!==null&&(d.direction!==null||d.speed===0);}
+function weatherNumber(v,min,max){return typeof v==="number"&&Number.isFinite(v)&&v>=min&&v<=max?v:null;}
+function weatherTimeText(time,zone){
+ try{return new Intl.DateTimeFormat(undefined,{timeZone:zone,month:"short",day:"numeric",hour:"numeric",minute:"2-digit",timeZoneName:"short"}).format(new Date(time));}
+ catch(e){return new Date(time).toISOString();}
+}
+function weatherCondition(code){
+ if(code===0)return "Clear";
+ if(code===1)return "Mostly clear";
+ if(code===2)return "Partly cloudy";
+ if(code===3)return "Overcast";
+ if(code===45||code===48)return "Fog";
+ if([51,53,55].includes(code))return "Drizzle";
+ if([56,57,66,67].includes(code))return "Freezing precipitation";
+ if([61,63,65].includes(code))return "Rain";
+ if([71,73,75,77].includes(code))return "Snow";
+ if([80,81,82].includes(code))return "Rain showers";
+ if([85,86].includes(code))return "Snow showers";
+ if([95,96,99].includes(code))return "Thunderstorms";
+ return "Conditions unavailable";
+}
+function weatherValue(v,suffix,digits=0){return v===null?"Unavailable":v.toFixed(digits)+suffix;}
+function updateWeatherUI(){
+ el("weatherLocation").textContent="Weather for stand: "+stand[0].toFixed(4)+", "+stand[1].toFixed(4);
+ el("loadWeather").disabled=weatherLoading;
+ el("loadWeather").textContent=weatherLoading?"Loading…":weatherData?"Refresh Weather":"Load Weather";
+ el("applyWeather").disabled=weatherLoading||!ready||!weatherUsable(weatherData);
+ let message=weatherMessage||"Open Weather to load a preview for the stand.";
+ if(weatherData&&!weatherLoading&&!weatherFresh(weatherData))message="Weather preview is old. Refresh before applying.";
+ el("weatherStatus").textContent=message;
+ if(weatherData){
+  const d=weatherData;
+  el("weatherSummary").textContent=weatherCondition(d.code)+" · "+weatherValue(d.temperature,"°F",1)+" · Humidity "+weatherValue(d.humidity,"%")+" · Cloud "+weatherValue(d.cloud,"%");
+  const direction=d.direction===null?(d.speed===0?"Calm; direction unavailable":"Direction unavailable"):
+   "FROM "+Math.round(d.direction)+"° "+names[Math.round(d.direction/22.5)%16];
+  el("weatherWind").textContent=direction+" · Wind "+weatherValue(d.speed," mph",1)+" · Gusts "+weatherValue(d.gust," mph",1)+" · Precipitation "+weatherValue(d.precipitation," in",2);
+  el("weatherTime").textContent="Valid "+weatherTimeText(d.time,d.zone)+" · Retrieved "+weatherTimeText(d.fetchedAt,d.zone);
+ }else{
+  el("weatherSummary").textContent="";el("weatherWind").textContent="";el("weatherTime").textContent="";
+ }
+ if(weatherApplied){
+  el("windSource").textContent=!sameWeatherPoint(weatherApplied.point,stand)?"Wind input: previous stand weather — load and apply for this stand":
+   !weatherFresh(weatherApplied)?"Wind input: old weather — refresh and apply":
+   "Wind input: Open-Meteo · 10 m forecast · "+weatherTimeText(weatherApplied.time,weatherApplied.zone);
+ }else el("windSource").textContent="Wind input: manual";
+}
+function manualWind(){weatherApplied=null;updateWeatherUI();}
+function invalidateWeather(){
+ weatherRequest++;
+ if(weatherController)weatherController.abort();
+ weatherController=null;weatherLoading=false;weatherData=null;
+ weatherMessage="Stand location changed. Load weather for this stand.";
+ updateWeatherUI();
+}
+async function loadWeather(){
+ const point=weatherPoint(stand),id=++weatherRequest;
+ if(weatherController)weatherController.abort();
+ const controller=new AbortController();weatherController=controller;
+ weatherData=null;weatherLoading=true;weatherMessage="Loading model weather for the stand…";updateWeatherUI();
+ const timeout=setTimeout(()=>controller.abort(),15000);
+ try{
+  const url=new URL("https://api.open-meteo.com/v1/forecast");
+  url.search=new URLSearchParams({latitude:String(point[0]),longitude:String(point[1]),
+   current:"temperature_2m,relative_humidity_2m,precipitation,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code",
+   wind_speed_unit:"mph",temperature_unit:"fahrenheit",precipitation_unit:"inch",
+   timeformat:"unixtime",timezone:"auto",forecast_days:"1",models:"best_match"});
+  const response=await fetch(url,{signal:controller.signal});
+  if(!response.ok)throw Error(response.status===429?"Provider rate limit. Try again shortly.":"HTTP "+response.status);
+  const data=await response.json();
+  if(id!==weatherRequest||!sameWeatherPoint(point,stand))return;
+  if(data.error)throw Error(data.reason||"Weather provider error");
+  const c=data.current,u=data.current_units||{};
+  if(!c||typeof c.time!=="number"||!Number.isFinite(c.time))throw Error("Weather time unavailable");
+  if(!["mp/h","mph"].includes(u.wind_speed_10m)||!["mp/h","mph"].includes(u.wind_gusts_10m))throw Error("Unexpected wind units; nothing applied");
+  weatherData={point,time:c.time*1000,fetchedAt:Date.now(),zone:data.timezone||"UTC",
+   speed:weatherNumber(c.wind_speed_10m,0,250),gust:weatherNumber(c.wind_gusts_10m,0,250),
+   direction:weatherNumber(c.wind_direction_10m,0,360),temperature:weatherNumber(c.temperature_2m,-150,160),
+   humidity:weatherNumber(c.relative_humidity_2m,0,100),cloud:weatherNumber(c.cloud_cover,0,100),
+   precipitation:weatherNumber(c.precipitation,0,100),code:weatherNumber(c.weather_code,0,99)};
+  if(weatherData.direction!==null)weatherData.direction=norm(weatherData.direction);
+  weatherMessage=weatherUsable(weatherData)?"Preview ready. Apply Weather to use these winds.":
+   weatherFresh(weatherData)?"Wind data is incomplete. Nothing applied; refresh to retry.":"Weather preview is old. Refresh before applying.";
+ }catch(error){
+  if(id===weatherRequest){weatherData=null;weatherMessage=error.name==="AbortError"?"Weather request timed out. Try again.":"Weather unavailable: "+error.message;}
+ }finally{
+  clearTimeout(timeout);
+  if(id===weatherRequest){weatherLoading=false;weatherController=null;updateWeatherUI();}
+ }
+}
+function applyWeather(){
+ if(!ready||weatherLoading||!weatherUsable(weatherData)){
+  weatherMessage="Load complete, current weather for this stand before applying.";updateWeatherUI();return;
+ }
+ const d=weatherData;
+ if(d.direction!==null)bearing=norm(Math.round(d.direction/5)*5);
+ const speed=Math.round(d.speed),gust=Math.round(d.gust);
+ el("speed").max=Math.max(30,Math.ceil(speed/5)*5);
+ el("gustSpeed").max=Math.max(45,Math.ceil(gust/5)*5);
+ el("speed").value=speed;el("gustSpeed").value=gust;
+ weatherApplied={...d};
+ refresh();scheduleBuild();resetParticles();
+ weatherMessage="Applied: FROM "+bearing+"° · "+speed+" mph · gusts "+gust+" mph. Inputs rounded to 5° and whole mph.";
+ updateWeatherUI();status("Weather applied · terrain wind updated");
+}
+weatherAgeTimer=setInterval(()=>{if(weatherData||weatherApplied)updateWeatherUI();},60000);
+window.addEventListener("pagehide",()=>{weatherRequest++;if(weatherController)weatherController.abort();clearInterval(weatherAgeTimer);weatherController=null;weatherLoading=false;});
+window.addEventListener("pageshow",()=>{clearInterval(weatherAgeTimer);weatherAgeTimer=setInterval(()=>{if(weatherData||weatherApplied)updateWeatherUI();},60000);updateWeatherUI();});
 function validCoordinates(p){return p.length===2&&p.every(Number.isFinite)&&Math.abs(p[0])<=85&&Math.abs(p[1])<=180;}
 function goLocation(p,label,moveStand=true){if(!ready||!validCoordinates(p))return;pauseFollow();if(moveStand){if(Math.hypot((stand[0]-HOME[0])*111320,(stand[1]-HOME[1])*94000)<10000)propertyStand=stand.slice();setStand(p);}area=p.slice();placing=false;map.flyTo({center:ll(p),zoom:15,duration:1600});status("Viewing "+label);}
 function centerOn(p,zoom){pauseFollow();if(ready)map.flyTo({center:ll(p),zoom,duration:1000});}
@@ -470,21 +602,22 @@ function toggleFollow(){
  updateGPSInfo();
 }
 window.addEventListener("pagehide",()=>stopGPS(""));
-function showTab(name){for(const tab of ["wind","gust","terrain","eddy","more"]){el(tab).classList.toggle("hidden",tab!==name);root.querySelector('[data-tab="'+tab+'"]').classList.toggle("active",tab===name);}el("panel").classList.remove("hidden");el("open").classList.add("hidden");}
+function showTab(name){for(const tab of ["wind","gust","terrain","eddy","weather","more"]){el(tab).classList.toggle("hidden",tab!==name);root.querySelector('[data-tab="'+tab+'"]').classList.toggle("active",tab===name);}el("panel").classList.remove("hidden");el("open").classList.add("hidden");if(name==="weather"&&!weatherData&&!weatherLoading)loadWeather();}
 function closePanel(){el("panel").classList.add("hidden");el("open").classList.remove("hidden");}
 el("searchForm").onsubmit=searchPlaces;
+el("loadWeather").onclick=loadWeather;el("applyWeather").onclick=applyWeather;
 el("direction").oninput=e=>setBearing(+e.target.value);
 el("minus").onclick=()=>setBearing(bearing-5);el("plus").onclick=()=>setBearing(bearing+5);
 el("windHeight").onchange=()=>{
  resetParticles();updateWindHeightInfo();
  status("Wind layer: "+windHeightFeet()+" ft above sampled terrain");
 };
-el("speed").oninput=refresh;el("gustSpeed").oninput=refresh;el("spread").onchange=refresh;
+el("speed").oninput=()=>{manualWind();refresh();};el("gustSpeed").oninput=()=>{manualWind();refresh();};el("spread").onchange=refresh;
 el("density").oninput=e=>el("densityText").textContent=e.target.value;
 el("motion").oninput=e=>el("motionText").textContent=e.target.value+"×";
 el("eddies").onchange=()=>{scheduleBuild();status(el("eddies").value==="on"?"Terrain airflow enabled":"Straight-line wind selected");};
 el("eddyStrength").oninput=e=>{el("eddyText").textContent=e.target.value+"%";scheduleBuild();};
-el("resetWind").onclick=()=>{bearing=315;el("windHeight").value="5";updateWindHeightInfo();el("speed").value=8;el("gustSpeed").value=12;el("spread").value=17;el("density").value=250;el("motion").value=3;el("densityText").textContent="250";el("motionText").textContent="3×";el("eddies").value="on";el("eddyStrength").value=65;el("eddyText").textContent="65%";refresh();scheduleBuild();};
+el("resetWind").onclick=()=>{manualWind();bearing=315;el("speed").max=30;el("gustSpeed").max=45;el("windHeight").value="5";updateWindHeightInfo();el("speed").value=8;el("gustSpeed").value=12;el("spread").value=17;el("density").value=250;el("motion").value=3;el("densityText").textContent="250";el("motionText").textContent="3×";el("eddies").value="on";el("eddyStrength").value=65;el("eddyText").textContent="65%";refresh();scheduleBuild();};
 el("standToggle").onclick=()=>{const h=el("standList").classList.toggle("hidden");el("standToggle").textContent=h?"📍 Stand ▸":"📍 Stand ▾";};
 el("place").onclick=()=>{placing=true;status("Tap the map to set stand");};
 el("drag").onclick=()=>{dragging=!dragging;if(standMarker)standMarker.setDraggable(dragging);el("drag").textContent="Drag stand: "+(dragging?"on":"off");};
@@ -505,13 +638,13 @@ let pointer=null;
 function turnCompass(e){const r=el("wheel").getBoundingClientRect();setBearing(Math.atan2(e.clientX-r.left-r.width/2,-(e.clientY-r.top-r.height/2))*180/Math.PI);}
 function wireCompass(target,type){target.addEventListener("pointerdown",e=>{e.preventDefault();e.stopPropagation();pointer={id:e.pointerId,type,x:e.clientX,y:e.clientY,left:el("compass").offsetLeft,top:el("compass").offsetTop};target.setPointerCapture(e.pointerId);if(type==="turn")turnCompass(e);});target.addEventListener("pointermove",e=>{if(!pointer||pointer.id!==e.pointerId)return;e.preventDefault();if(type==="move"){el("compass").style.left=clamp(pointer.left+e.clientX-pointer.x,0,root.clientWidth-76)+"px";el("compass").style.right="auto";el("compass").style.top=clamp(pointer.top+e.clientY-pointer.y,0,root.clientHeight-100)+"px";}else turnCompass(e);});for(const n of ["pointerup","pointercancel"])target.addEventListener(n,e=>{if(pointer&&pointer.id===e.pointerId)pointer=null;});}
 wireCompass(el("move"),"move");wireCompass(el("wheel"),"turn");el("bearingButton").addEventListener("pointerdown",e=>e.stopPropagation());
-updateWindHeightInfo();refresh();requestAnimationFrame(windLoop);
+updateWeatherUI();updateWindHeightInfo();refresh();requestAnimationFrame(windLoop);
 try{
  css(CDN+"maplibre-gl.css");if(!window.maplibregl)await script(CDN+"maplibre-gl.js");ML=window.maplibregl;
  map=new ML.Map({container:el("map"),center:ll(HOME),zoom:15,pitch:0,maxPitch:75,minZoom:2,maxZoom:19,renderWorldCopies:false,pixelRatio:Math.min(devicePixelRatio||1,2),attributionControl:{compact:true},style:{version:8,sources:{satellite:{type:"raster",tiles:[SAT],tileSize:256,maxzoom:19,attribution:"© Esri"},terrain:{type:"raster-dem",tiles:[DEM],tileSize:256,maxzoom:15,encoding:"terrarium",attribution:"Elevation: Mapzen / AWS"},shade:{type:"raster-dem",tiles:[DEM],tileSize:256,maxzoom:15,encoding:"terrarium"}},layers:[{id:"background",type:"background",paint:{"background-color":"#aac8a0"}},{id:"satellite",type:"raster",source:"satellite"},{id:"hills",type:"hillshade",source:"shade",paint:{"hillshade-exaggeration":.45}}]}});
  map.on("load",()=>{ready=true;map.addSource("gps-accuracy",{type:"geojson",data:emptyGPS()});
 map.addLayer({id:"gps-accuracy-fill",type:"fill",source:"gps-accuracy",paint:{"fill-color":"#299dff","fill-opacity":.15}});
-map.addLayer({id:"gps-accuracy-line",type:"line",source:"gps-accuracy",paint:{"line-color":"#65bdff","line-width":1.5,"line-opacity":.8}});map.addSource("scent",{type:"geojson",data:{type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[fanCoordinates()]}}});map.addLayer({id:"scent-fill",type:"fill",source:"scent",paint:{"fill-color":"#ffe132","fill-opacity":.32}});map.addLayer({id:"scent-line",type:"line",source:"scent",paint:{"line-color":"#ffe132","line-width":3}});map.addLayer({id:"wind-matrix",type:"custom",renderingMode:"3d",render(gl,args){matrix=Array.from(args.defaultProjectionData.mainMatrix);}});makeMarker(NORTH,"#ef4444",14);makeMarker(SOUTH,"#fb923c",14);standMarker=makeMarker(stand,"#ffdc20",23,dragging);standMarker.on("drag",()=>{const p=standMarker.getLngLat();stand=[p.lat,p.lng];refresh();});refresh();updateInfo();status("Continuous map ready · drag to explore");});
+map.addLayer({id:"gps-accuracy-line",type:"line",source:"gps-accuracy",paint:{"line-color":"#65bdff","line-width":1.5,"line-opacity":.8}});map.addSource("scent",{type:"geojson",data:{type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[fanCoordinates()]}}});map.addLayer({id:"scent-fill",type:"fill",source:"scent",paint:{"fill-color":"#ffe132","fill-opacity":.32}});map.addLayer({id:"scent-line",type:"line",source:"scent",paint:{"line-color":"#ffe132","line-width":3}});map.addLayer({id:"wind-matrix",type:"custom",renderingMode:"3d",render(gl,args){matrix=Array.from(args.defaultProjectionData.mainMatrix);}});makeMarker(NORTH,"#ef4444",14);makeMarker(SOUTH,"#fb923c",14);standMarker=makeMarker(stand,"#ffdc20",23,dragging);standMarker.on("drag",()=>{const p=standMarker.getLngLat();stand=[p.lat,p.lng];invalidateWeather();refresh();});refresh();updateInfo();updateWeatherUI();status("Continuous map ready · drag to explore");});
  map.on("click",e=>{if(placing){placing=false;setStand([e.lngLat.lat,e.lngLat.lng]);}});
  map.on("dragstart",()=>{if(following){pauseFollow();status("Follow Me paused · GPS beacon stays live");}});
  map.on("movestart",()=>{field=null;coverageRegions=[];resetParticles();});map.on("moveend",()=>{el("tiltText").textContent=Math.round(map.getPitch())+"°";if(mode==="3d")el("tilt").value=clamp(map.getPitch(),0,65);scheduleBuild();});map.on("idle",scheduleBuild);map.on("sourcedata",e=>{if(mode==="3d"&&e.sourceId==="terrain"&&!map.isMoving()&&performance.now()-lastTileBuild>700){lastTileBuild=performance.now();scheduleBuild();}});
