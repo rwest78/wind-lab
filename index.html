@@ -1,3 +1,4 @@
+
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <div id="awl77">
@@ -224,6 +225,9 @@ html,body{margin:0;height:100%;overflow:hidden}
 <select id="a77thermalCover"><option value="1">Open / clear-cut</option><option value=".55" selected>Mixed cover</option><option value=".25">Dense tree cover</option></select></label></div>
 <div class="line"><label>Thermal effect strength <b id="a77thermalStrengthText">65%</b>
 <input id="a77thermalStrength" type="range" min="0" max="100" step="5" value="65"></label></div>
+<div class="line"><label>Thermal particle density <b id="a77thermalDensityText">900</b>
+<input id="a77thermalDensity" type="range" min="300" max="1800" step="100" value="900"></label></div>
+<div class="note">Thin trails with direction tips. Density adds tracers where thermal flow exists; flat or weak-flow areas may stay sparse. Lower density if animation slows.</div>
 <div class="line"><button id="a77thermal3D">Enable 3D</button></div>
 <div id="a77thermalInfo" class="note" aria-live="polite"></div>
 <div class="note">Estimated thermal flow · solar position + slope + sampled terrain shadows. Strength, cloud/cover response and 15-minute heating lag are uncalibrated assumptions. Preview keeps the selected wind and cloud assumptions; it does not load future weather.</div>
@@ -324,7 +328,7 @@ let weatherData=null,weatherApplied=null,weatherController=null;
 let weatherRequest=0,weatherLoading=false,weatherMessage="",weatherAgeTimer=null;
 let gpsWatch=null,gpsSession=0,gpsFix=null,gpsTimer=null,gpsBeacon=null;
 let following=false,gpsCenterPending=false,gpsStandPending=false,gpsError="",gpsCameraUpdating=false;
-const N=65,MAX=600;
+const N=65,MAX=1800;
 let coverageRegions=[];
 const particles=Array.from({length:MAX},()=>({valid:false,x:Math.random(),y:Math.random(),wx:0,wz:0,band:0,life:0,region:null,factor:.8+Math.random()*.4}));
 const canvas=el("canvas"),ctx=canvas.getContext("2d");
@@ -511,7 +515,28 @@ function changeThermals(){
 
 function project(x,z){if(!field||!matrix||!inside(x,z))return null;const px=field.cx+x*field.unit,py=field.cy+z*field.unit,pz=windElevation(x,z)*field.unit;const m=matrix,w=m[3]*px+m[7]*py+m[11]*pz+m[15];if(w<=0)return null;const sx=(m[0]*px+m[4]*py+m[8]*pz+m[12])/w,sy=(m[1]*px+m[5]*py+m[9]*pz+m[13])/w,sz=(m[2]*px+m[6]*py+m[10]*pz+m[14])/w;if(!Number.isFinite(sx)||!Number.isFinite(sy)||sz< -1||sz>1)return null;return {x:(sx+1)*root.clientWidth/2,y:(1-sy)*root.clientHeight/2};}
 function colors(i){switch(el("color").value){case "contrast":return [["#6af69c","#061b10"],["#ffd45c","#241808"],["#ff6565","#260707"]][i%3];case "cyan":return ["#65F6FF","#071b22"];case "magenta":return ["#FF35D4","#ffffff"];default:return ["#FFFFFF","#080b0e"];}}
-function stroke(points,c){ctx.lineCap="round";ctx.lineJoin="round";for(let pass=0;pass<2;pass++){ctx.beginPath();points.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.strokeStyle=pass?c[0]:c[1];ctx.lineWidth=pass?1.4:2.5;ctx.stroke();}}
+function thermalParticleCount(){return clamp(+el("thermalDensity").value||900,300,MAX);}
+function stroke(points,c){
+ const thermal=thermalMode()!=="off";
+ ctx.lineCap="round";ctx.lineJoin="round";
+ for(let pass=0;pass<2;pass++){
+  ctx.beginPath();points.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
+  ctx.strokeStyle=pass?c[0]:c[1];ctx.lineWidth=thermal?(pass?.75:1.45):(pass?1.4:2.5);ctx.stroke();
+ }
+ if(!thermal||points.length<2)return;
+ // points[0] is the moving head; its first tail segment gives local direction.
+ const head=points[0],tail=points[1],distance=Math.hypot(head.x-tail.x,head.y-tail.y);
+ if(distance<.25)return;
+ const ux=(head.x-tail.x)/distance,uy=(head.y-tail.y)/distance;
+ const back=3.2,wing=1.65;
+ for(let pass=0;pass<2;pass++){
+  ctx.beginPath();
+  ctx.moveTo(head.x-ux*back-uy*wing,head.y-uy*back+ux*wing);
+  ctx.lineTo(head.x,head.y);
+  ctx.lineTo(head.x-ux*back+uy*wing,head.y-uy*back-ux*wing);
+  ctx.strokeStyle=pass?c[0]:c[1];ctx.lineWidth=pass?.75:1.45;ctx.stroke();
+ }
+}
 function spawn(p,w,h){
  p.valid=false;
  for(let tries=0;tries<18;tries++){
@@ -530,7 +555,7 @@ function spawn(p,w,h){
   }
  }
 }
-function windLoop(time){requestAnimationFrame(windLoop);if(coverageRegions.length){field=coverageRegions[0];eddyCenters=field.eddies;}const w=root.clientWidth,h=root.clientHeight,r=Math.min(devicePixelRatio||1,2);if(canvas.width!==Math.round(w*r)||canvas.height!==Math.round(h*r)){canvas.width=Math.round(w*r);canvas.height=Math.round(h*r);canvas.style.width=w+"px";canvas.style.height=h+"px";resetParticles();}ctx.setTransform(r,0,0,r,0,0);ctx.clearRect(0,0,w,h);const dt=Math.min((time-lastTime||16)/1000,.05);lastTime=time;if(!ready||!animation||map.isMoving()||windSimulationSpeed()<=0)return;if(thermalMode()!=="off"){prepareThermalFrame();if(time-thermalUITime>1000){updateThermalUI();thermalUITime=time;}if(mode!=="3d")return;}windClock+=dt;const speed=windSimulationSpeed(),motion=+el("motion").value,count=+el("density").value,length=6+Math.min(4,speed/7.5);if(mode==="2d"){const a=(norm(bearing+180)-map.getBearing())*Math.PI/180,dx=Math.sin(a),dy=-Math.cos(a);for(let i=0;i<count;i++){const p=particles[i];p.x+=dx*speed*dt*motion*p.factor/35;p.y+=dy*speed*dt*motion*p.factor/35;if(p.x>1.03)p.x=-.03;if(p.x<-.03)p.x=1.03;if(p.y>1.03)p.y=-.03;if(p.y<-.03)p.y=1.03;stroke([{x:p.x*w,y:p.y*h},{x:p.x*w-dx*length,y:p.y*h-dy*length}],colors(i));}return;}if(!field||!matrix)return;for(let i=0;i<count;i++){const p=particles[i];p.life-=dt;if(p.life<=0)p.valid=false;if(p.valid){field=p.region;eddyCenters=field.eddies;}else{spawn(p,w,h);if(!p.valid)continue;}const f=flowAt(p.wx,p.wz),mag=Math.hypot(f.vx,f.vz);if(mag<.015){p.valid=false;continue;}const dx=f.vx/mag,dz=f.vz/mag,a=project(p.wx,p.wz),b=project(p.wx+dx*10,p.wz+dz*10);if(!a||!b){p.valid=false;continue;}const ppm=Math.hypot(b.x-a.x,b.y-a.y)/10;if(ppm<.00001){p.valid=false;continue;}let step=Math.min(speed*motion*w/35/ppm*dt*p.factor,field.span*.04);const limit=eddyCenters.length?Math.min(...eddyCenters.map(e=>e.radius))/12:field.span/100,steps=Math.min(12,Math.max(1,Math.ceil(step*2.2/limit)));step=Math.min(step,steps*limit/2.2);const ds=step/steps;for(let j=0;j<steps;j++){const v=flowAt(p.wx,p.wz),mid=flowAt(p.wx+v.vx*ds*.5,p.wz+v.vz*ds*.5);p.wx+=mid.vx*ds;p.wz+=mid.vz*ds;}const head=project(p.wx,p.wz);if(!head||head.x< -15||head.y< -15||head.x>w+15||head.y>h+15){p.valid=false;continue;}const len=Math.min(length/ppm,field.span*.04),pts=[];let x=p.wx,z=p.wz;for(let j=0;j<=5;j++){const q=project(x,z);if(!q){pts.length=0;break;}pts.push(q);const v=flowAt(x,z),m=Math.hypot(v.vx,v.vz);if(m<.015){pts.length=0;break;}x-=v.vx/m*len/5;z-=v.vz/m*len/5;}if(pts.length)stroke(pts,colors(i));}field=coverageRegions[0];eddyCenters=field.eddies;}
+function windLoop(time){requestAnimationFrame(windLoop);if(coverageRegions.length){field=coverageRegions[0];eddyCenters=field.eddies;}const w=root.clientWidth,h=root.clientHeight,r=Math.min(devicePixelRatio||1,2);if(canvas.width!==Math.round(w*r)||canvas.height!==Math.round(h*r)){canvas.width=Math.round(w*r);canvas.height=Math.round(h*r);canvas.style.width=w+"px";canvas.style.height=h+"px";resetParticles();}ctx.setTransform(r,0,0,r,0,0);ctx.clearRect(0,0,w,h);const dt=Math.min((time-lastTime||16)/1000,.05);lastTime=time;if(!ready||!animation||map.isMoving()||windSimulationSpeed()<=0)return;if(thermalMode()!=="off"){prepareThermalFrame();if(time-thermalUITime>1000){updateThermalUI();thermalUITime=time;}if(mode!=="3d")return;}windClock+=dt;const speed=windSimulationSpeed(),motion=+el("motion").value,count=thermalMode()==="off"?+el("density").value:thermalParticleCount(),length=thermalMode()==="off"?6+Math.min(4,speed/7.5):12;if(mode==="2d"){const a=(norm(bearing+180)-map.getBearing())*Math.PI/180,dx=Math.sin(a),dy=-Math.cos(a);for(let i=0;i<count;i++){const p=particles[i];p.x+=dx*speed*dt*motion*p.factor/35;p.y+=dy*speed*dt*motion*p.factor/35;if(p.x>1.03)p.x=-.03;if(p.x<-.03)p.x=1.03;if(p.y>1.03)p.y=-.03;if(p.y<-.03)p.y=1.03;stroke([{x:p.x*w,y:p.y*h},{x:p.x*w-dx*length,y:p.y*h-dy*length}],colors(i));}return;}if(!field||!matrix)return;for(let i=0;i<count;i++){const p=particles[i];p.life-=dt;if(p.life<=0)p.valid=false;if(p.valid){field=p.region;eddyCenters=field.eddies;}else{spawn(p,w,h);if(!p.valid)continue;}const f=flowAt(p.wx,p.wz),mag=Math.hypot(f.vx,f.vz);if(mag<.015){p.valid=false;continue;}const dx=f.vx/mag,dz=f.vz/mag,a=project(p.wx,p.wz),b=project(p.wx+dx*10,p.wz+dz*10);if(!a||!b){p.valid=false;continue;}const ppm=Math.hypot(b.x-a.x,b.y-a.y)/10;if(ppm<.00001){p.valid=false;continue;}let step=Math.min(speed*motion*w/35/ppm*dt*p.factor,field.span*.04);const limit=eddyCenters.length?Math.min(...eddyCenters.map(e=>e.radius))/12:field.span/100,steps=Math.min(12,Math.max(1,Math.ceil(step*2.2/limit)));step=Math.min(step,steps*limit/2.2);const ds=step/steps;for(let j=0;j<steps;j++){const v=flowAt(p.wx,p.wz),mid=flowAt(p.wx+v.vx*ds*.5,p.wz+v.vz*ds*.5);p.wx+=mid.vx*ds;p.wz+=mid.vz*ds;}const head=project(p.wx,p.wz);if(!head||head.x< -15||head.y< -15||head.x>w+15||head.y>h+15){p.valid=false;continue;}const len=Math.min(length/ppm,field.span*.04),pts=[];let x=p.wx,z=p.wz;for(let j=0;j<=5;j++){const q=project(x,z);if(!q){pts.length=0;break;}pts.push(q);const v=flowAt(x,z),m=Math.hypot(v.vx,v.vz);if(m<.015){pts.length=0;break;}x-=v.vx/m*len/5;z-=v.vz/m*len/5;}if(pts.length)stroke(pts,colors(i));}field=coverageRegions[0];eddyCenters=field.eddies;}
 function applyView(){if(!ready)return;map.setPaintProperty("satellite","raster-opacity",preferredView==="satellite"?1:0);map.setPaintProperty("hills","hillshade-exaggeration",preferredView==="relief"?.7:+el("shade").value/100);}
 function setMode(next){if(!ready)return;mode=next;field=null;coverageRegions=[];matrix=null;resetParticles();if(next==="3d"){map.setTerrain({source:"terrain",exaggeration});map.easeTo({pitch:+el("tilt").value,duration:500});status("Continuous 3D · drag to explore");}else{map.setTerrain(null);map.easeTo({pitch:0,bearing:0,duration:500});status("2D satellite ready");}scheduleBuild();updateInfo();}
 /* Streaming overlays: native map tiles, calculated outside the UI thread. */
@@ -1128,6 +1153,7 @@ function showTab(name){for(const tab of ["wind","gust","terrain","eddy","thermal
 function closePanel(){el("panel").classList.add("hidden");el("open").classList.remove("hidden");}
 for(const id of ["thermalMode","thermalCloudSource","thermalCover"])el(id).onchange=changeThermals;
 for(const id of ["thermalTime","thermalCloud","thermalStrength"])el(id).oninput=changeThermals;
+el("thermalDensity").oninput=e=>{el("thermalDensityText").textContent=e.target.value;};
 el("thermalNow").onclick=()=>{el("thermalTime").value=0;changeThermals();};
 el("thermal3D").onclick=()=>{setMode("3d");updateThermalUI();};
 el("searchForm").onsubmit=searchPlaces;
